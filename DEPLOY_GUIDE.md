@@ -1,147 +1,171 @@
 # 部署到公网：手把手操作手册
 
-> 目标：拿到一个永久公网链接（类似 `https://gh-dashboard.up.railway.app`），发给别人就能访问并多人协作。
-
-整套流程分 3 步，全程 5–10 分钟。我先帮你把所有能跑的命令都准备好了，你只需要在 2 个网站点点鼠标。
+> 目标：拿到一个公网链接（形如 `https://yusong-production-xxxx.up.railway.app`），发给别人就能访问并多人协作。
 
 ---
 
-## 第 1 步：在 GitHub 创建一个空仓库
+## ✅ 你的进度
 
-> 这一步**完全不需要任何代码**，就是网页上点几下。
+| 步骤 | 状态 |
+|---|---|
+| 第 1 步 在 GitHub 创建仓库 | ✅ 已完成（`github.com/ruanyusong1996/yusong`） |
+| 第 2 步 推送代码 | ✅ 已完成（远程 main 分支已有 2 个提交） |
+| **第 3 步 Railway 部署** | ⬅ **你在这里** |
+| 第 4 步 生成公网链接 | 待做 |
+| 第 5 步 挂磁盘保数据 | 待做（强烈建议） |
 
-1. 打开 https://github.com/new （需要先登录 GitHub，没有账号就点右上角 Sign up 注册，免费）
-2. 填表：
-   - **Repository name**：`gh-dashboard`（名字随便起，后面要用）
-   - **Description**：可不填
-   - **Public / Private**：选 `Public`（Railway 免费层只支持 Public 私有仓库要付费）
-   - 下面四个勾选框**全部不要勾**（不勾 Add README、不勾 Add .gitignore、不勾 Choose a license）
-3. 点绿色按钮 **Create repository**
-4. 创建后会跳到一个新页面，中间会有一块"…or push an existing repository from the command line"，**记下这个 SSH 地址**：
-   ```
-   git@github.com:<你的用户名>/gh-dashboard.git
-   ```
-   或者 HTTPS 地址：
-   ```
-   https://github.com/<你的用户名>/gh-dashboard.git
-   ```
-
-记下你的 **GitHub 用户名** 和仓库地址，下一步要用。
+**从第 3 步开始照着做就行。**
 
 ---
 
-## 第 2 步：把本地代码推到 GitHub
+# 第 3 步：在 Railway 部署（★ 2026 最新界面）
 
-打开终端（macOS 按 `⌘ + Space` 搜"终端"），**复制粘贴下面这一整段**：
+> ⚠️ **你找不到界面，是因为 Railway 改版了**：旧教程里的 "Deploy from GitHub repo" 已经**改名为 "GitHub Repository"**，而且整个页面布局也换了。
 
-### 如果上面记的是 HTTPS 地址（推荐新手用）：
+## 3.1 先登录
 
-```bash
-cd /Users/yusong/WorkBuddy/2026-10-13-14-12-54/output
+1. 打开 👉 **https://railway.com/new**
+2. 页面底部会弹出一长条 **cookie 提示**（中文）→ 点右边的 **「全部接受」** 关掉它
+3. 看**右上角**的 **Login** → 点它
+4. 在弹出页选 **Continue with GitHub**（用 GitHub 账号一键登录，不用另注册）
+5. 第一次会跳到 GitHub 问「Authorize Railway」→ 点绿色 **Authorize** 按钮
 
-git remote add origin https://github.com/你的用户名/gh-dashboard.git
-git push -u origin main
+## 3.2 创建项目
+
+登录后再次打开 👉 **https://railway.com/new**
+
+页面正中间会出现这样一张卡片（就是下面截图的样子）：
+
+![Railway 新建项目界面](railway-new-ui.png)
+
+框里从上到下是：
+
+| 位置 | 选项 | 说明 |
+|---|---|---|
+| ① 顶部输入框 | **Describe your project or paste a repo link** | 偷懒通道：直接粘仓库链接 |
+| ② 第一个卡片 | **GitHub Repository** | ← **点这个**（就是旧版的 "Deploy from GitHub repo"） |
+| ③ | Database / Template / Docker Image / Function / Bucket / Sandbox | 都不点 |
+
+**两种走法，任选一种：**
+
+### 走法 A（最快，推荐）
+
+直接在 **① 那个输入框** 里粘贴你的仓库地址，回车：
+
+```
+https://github.com/ruanyusong1996/yusong
 ```
 
-把 `你的用户名` 换成你 GitHub 真实用户名。运行时：
-- 第一次 push 会弹窗问账号密码 → **密码那栏不是填 GitHub 密码**，要填 **Personal Access Token**
-  - 没有 Token？浏览器开 https://github.com/settings/tokens/new ，Note 随便填（如 `mac-push`），Expiration 选 `90 days`，Scope 勾选 **`repo`**，点最下面的 **Generate token**
-  - 复制那串以 `ghp_` 开头的 token，当密码粘贴进去
-- 看到一串文件上传进度 + `Branch 'main' set up to track ...` 就成功了
+### 走法 B（常规）
 
-### 如果上面记的是 SSH 地址（无需输密码，但要配 SSH key）：
+点 **② GitHub Repository** → 弹出仓库列表 → 找到 **`yusong`** → 点它
 
-```bash
-cd /Users/yusong/WorkBuddy/2026-10-13-14-12-54/output
+> 如果列表是空的、并提示 "Configure GitHub App"，说明 Railway 还没拿到你 GitHub 仓库的权限：
+> 点 **Configure GitHub App** → 选 **Only select repositories** → 勾上 `yusong` → **Save** → 再回到 `railway.com/new` 重来。
 
-# 配 SSH（一次性）
-ssh-keygen -t ed25519 -C "你的邮箱@example.com"        # 全程回车
-cat ~/.ssh/id_ed25519.pub | pbcopy                       # 公钥已复制
+## 3.3 开始部署
+
+- 如果弹出配置页，直接点右下角 **Deploy Now**（**不用改任何设置**，`railway.toml` 已经替你配好了）
+- Railway 自动执行：装依赖 → 识别为 Node 项目 → 跑 `node server.js`
+- 等 **1～2 分钟**，直到日志里出现这几行白字：
+
+```
+海底捞集团工会工作数据看板 - 后端服务
+数据文件:   /app/server-data.json
+Server listening on http://0.0.0.0:xxxx
 ```
 
-把这段粘到 https://github.com/settings/keys → **New SSH key** → Title 写个名字、Key 直接 `⌘V` 粘贴 → **Add SSH key**。
-
-然后回到终端：
-
-```bash
-git remote add origin git@github.com:你的用户名/gh-dashboard.git
-git push -u origin main
-```
-
-看到 `Branch 'main' set up to track ...` 就算成功。
-
-### 验证
-
-刷新 GitHub 仓库页面，应该能看到 16 个文件。✅
+看到 `Server listening` 就说明服务跑起来了 ✅
 
 ---
 
-## 第 3 步：在 Railway 部署
+# 第 4 步：生成公网链接
 
-1. 打开 https://railway.app/new
-2. 点击 **Login with GitHub**（用刚登录过的 GitHub 账号直接授权）
-3. 点 **Deploy from GitHub repo**
-4. 在仓库列表里找到 `gh-dashboard`（如果列表为空，先点旁边的 **Configure GitHub App** 授权 Railway 访问你的仓库）
-5. 点仓库名称 → **Deploy Now**
-6. Railway 自动开始：
-   - 用 Nixpacks 检测到 Node 项目
-   - `npm install`（装依赖，约 30 秒）
-   - `npm start`（启动 server.js）
-7. 等右上方 Logs 显示 `Server listening on http://0.0.0.0:PORT` 就部署成功了
+服务跑起来还只是内网，要手动开个公网门：
 
----
-
-## 第 4 步：拿到公网链接
-
-1. 在 Railway 项目页面，点你的服务（中间那个卡片，名字通常自动取了仓库名）
+1. 在项目画布上**点一下你的服务卡片**
 2. 顶部标签切到 **Settings**
-3. 往下翻到 **Networking** 区块
+3. 往下翻，找到 **Networking** 区块
 4. 点 **Generate Domain** 按钮
-5. 几秒后出现一个地址，类似 `gh-dashboard-production.up.railway.app`
-6. **复制它**
+5. 几秒后出现一行地址，形如 `yusong-production-xxxx.up.railway.app`
+6. 点右边的**复制按钮** —— 这就是你要发出去的链接
 
-这就是你的公网链接。访问方式：
-- 看板：`https://gh-dashboard-production.up.railway.app/`
-- 后台：`https://gh-dashboard-production.up.railway.app/admin.html`
+访问方式：
 
-把这个链接发给同事，他们打开就能看到你的看板。
+- 📊 看板：`https://yusong-production-xxxx.up.railway.app/`
+- ⚙️ 后台：`https://yusong-production-xxxx.up.railway.app/admin.html`
 
----
-
-## ⚠️ 关键提醒：Railway 免费层会休眠
-
-**每 15 分钟没人访问，容器自动休眠；下次唤醒时容器重建，`server-data.json` 丢失，数据回到初始的 20/13/7。**
-
-应付办法（任选其一即可）：
-
-### 方案 A：定期备份（最简单）
-
-每次更新数据后，进后台 → 右上角 **导出 JSON** → 下载一份到本地。出问题时你点重置再上传这个 JSON 即可。
-
-### 方案 B：自动备份到 GitHub（推荐）
-
-每个礼拜让 Railway 把 `server-data.json` 自动 commit 回 GitHub，告诉我我可以加。
-
-### 方案 C：用真数据库（最稳）
-
-把 JSON 文件换成 Railway 自带的 Postgres，告诉我我可以改 `server.js`，加数据库适配层 —— 这样容器重建数据也不会丢。
+把链接发给同事，他们打开就能看、也能直接改数据，改动会实时同步给所有人。
 
 ---
 
-## 推送失败/卡住了？常见原因
+# 第 5 步：挂一块磁盘，让数据永不丢失（强烈建议）
+
+> **为什么必须做**：Railway 免费层在你长时间不访问后会把容器重启一遍，重启时 `/app` 目录回到代码初始状态 —— 你改的所有数据会**退回初始的 20/13/7**。挂一块 Volume 就彻底解决。
+
+1. 在项目画布**空白处右键**（或点右上角 **+ Create**）
+2. 选 **Volume**
+3. 创建后，把 **Mount path（挂载路径）** 填成：
+   ```
+   /data
+   ```
+4. 回到你的**服务** → **Variables** 标签 → **+ New Variable**，加一条：
+
+   | 变量名 | 值 |
+   |---|---|
+   | `DATA_DIR` | `/data` |
+
+   > 这是 `server.js` 内置支持的开关：设了它，数据文件就写到 `/data/server-data.json`，也就是那块**不会丢的磁盘**上。
+
+5. 加完变量 Railway 会自动重新部署一次。等它跑完，就齐活了 —— 以后不管容器重启多少次，数据都还在。
+
+---
+
+## ⚠️ 关于费用：Railway 免费层额度很小
+
+Railway 现在**没有永久免费**了，只有：
+
+| 计划 | 额度 | 说明 |
+|---|---|---|
+| Free Trial | $5 一次性，30 天有效 | 新账号自动给 |
+| Free | **$1 / 月** | 试用到期后自动转这个 |
+| Hobby | $5 / 月 | 含 $5 用量额度 |
+
+你这个服务很轻（Node + 42KB 数据），空闲时内存约 100MB 左右：
+
+- 内存成本 ≈ 0.1GB × $10/GB/月 ≈ **$1 / 月**
+
+也就是说**刚好卡在免费层的 $1 额度边缘**，可能够、也可能偶尔超一点点。真跑起来后可以去 **Settings → Usage** 看实际消耗。
+
+**如果不想操心**，随时可以切到别的平台（见文末）。
+
+---
+
+## 常见问题排查
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| `Authentication failed for ...` | 用了 HTTPS 但密码写成了 GitHub 密码 | 去 https://github.com/settings/tokens 生成 token 当密码填 |
-| `Repository not found` | 用户名写错了 | `git remote set-url origin https://github.com/正确的用户名/gh-dashboard.git` |
-| `Permission denied (publickey)` | 用了 SSH 但没配 key | 回到第 2 步的 SSH 配置段 |
-| Railway 找不到仓库 | 没授权 Railway 访问你的 repo | 点 **Configure GitHub App** → 选仓库 |
-| 部署失败 Logs 里写 `Cannot find module 'express'` | node_modules 没被 commit（这是对的）| Railway 应当自动 `npm install`，等着就行；如失败，Service → **Restart** |
+| 打开 railway.com/new 只有营销页，没有卡片列表 | 没登录 / 没关 cookie 弹窗 | 先点右上角 **Login** → Continue with GitHub；再点「全部接受」 |
+| 仓库列表里找不到 `yusong` | Railway 没拿到 GitHub 权限 | 点 **Configure GitHub App** → 勾选 `yusong` → Save |
+| 部署失败，日志 `Cannot find module 'express'` | 依赖没装上 | 等它自动重试；或 Service → 右上 **⋯** → **Redeploy** |
+| 部署成功但链接打不开 | 忘了 Generate Domain | 回到第 4 步 |
+| 数据用着用着变回 20/13/7 | 容器重建丢数据 | 做第 5 步挂 Volume |
+| 页面能开但一直显示"本地存储"徽章 | 前端没连上后端 | 确认日志里没有报错、`/api/health` 能打开 |
 
-实在推不动代码？最笨的备选：
-1. 在 GitHub 仓库页面点 **uploading an existing file**（或拖拽）
-2. 把 `/Users/yusong/WorkBuddy/2026-10-13-14-12-54/output/` 里除了 `node_modules` 和 `.git` 的所有文件拖进去
-3. 点 **Commit changes**
-4. 之后回到第 3 步 Railway 部署
+---
 
-部署成功拿到链接后，把链接发给我，我帮你验证多人协作效果（同时改、跨地区访问）。
+## 如果 Railway 还是走不通，换这几个平台（都更快）
+
+| 平台 | 免费额度 | 特点 |
+|---|---|---|
+| **Zeabur** | 每月 $5 credits | 有**香港/新加坡节点**，国内访问快很多，中文界面，步骤和 Railway 几乎一样 |
+| **Render** | 真免费 | 但 15 分钟无访问会休眠，唤醒要等 30 秒 |
+| **Fly.io** | 有免费额度 | 需要命令行操作 |
+
+**Zeabur 尤其值得考虑** —— 你这个是中文团队协作场景，HK/SG 节点延迟能低 100～150ms，体验差别很明显，而且 $5/月的免费额度比 Railway 的 $1 宽松 5 倍。
+
+需要我换到 Zeabur 或者帮你把数据存进数据库（彻底不依赖磁盘），直接说。
+
+---
+
+部署完成拿到链接后，把链接发我，我帮你验证多人协作效果（同时改、跨地区访问）。

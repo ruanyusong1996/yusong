@@ -18,7 +18,9 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const DATA_FILE = path.join(ROOT, 'server-data.json');
+// 数据目录：默认与代码同目录；云端可指向挂载的持久化卷（如 Railway Volume: /data）
+const DATA_DIR = process.env.DATA_DIR || ROOT;
+const DATA_FILE = path.join(DATA_DIR, 'server-data.json');
 const SEED_FILE = path.join(ROOT, 'seed-data.json');
 const PORT = (() => {
   const arg = process.argv.find(a => a.startsWith('--port='));
@@ -34,6 +36,7 @@ const PORT = (() => {
 let writeChain = Promise.resolve();
 
 function ensureDataFile() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(DATA_FILE)) return;
   if (!fs.existsSync(SEED_FILE)) {
     console.error('[FATAL] 缺少 seed-data.json，无法初始化');
