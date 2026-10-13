@@ -97,8 +97,21 @@ function refreshSyncBadge() {
   el.classList.toggle('api', status.mode === 'api');
   const tag = el.querySelector('.sync-tag');
   if (tag) tag.textContent = status.mode === 'api' ? '云端共享' : '本地存储';
-  if (status.mode === 'api' && !status.connected) {
-    setSync('error', '已断线，正在重连…');
+
+  // 三态：断线 / 已同步（带时间戳）/ 已就绪
+  // 注意：必须处理"恢复"分支，否则一旦显示断线就再也回不来
+  if (status.mode === 'api') {
+    if (!status.connected) {
+      setSync('error', '已断线，正在重连…');
+    } else if (status.lastSync) {
+      const t = new Date(status.lastSync);
+      const pad = n => String(n).padStart(2, '0');
+      setSync('ok', `已同步 · ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`);
+    } else {
+      setSync('ok', '已就绪');
+    }
+  } else {
+    setSync('ok', '已同步');
   }
 }
 
