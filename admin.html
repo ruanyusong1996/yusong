@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据看板 · 后台管理</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./admin.css" />
+</head>
+<body class="admin-body">
+
+  <!-- 顶部 -->
+  <header class="admin-header">
+    <div class="admin-header-inner">
+      <div class="admin-title-block">
+        <h1 class="admin-title">⚙️ 工会数据看板 · 后台管理</h1>
+        <p class="admin-subtitle">
+          <span>所改即所得 —— 编辑后数据看板实时同步</span>
+          <span class="divider">|</span>
+          <a href="./index.html" target="_blank" class="back-link">« 返回看板</a>
+        </p>
+      </div>
+      <div class="admin-toolbar">
+        <button id="btn-export" class="btn btn-ghost">导出 JSON</button>
+        <button id="btn-import" class="btn btn-ghost">导入 JSON</button>
+        <input id="file-import" type="file" accept=".json" style="display:none" />
+        <button id="btn-reset" class="btn btn-danger">重置数据</button>
+        <span id="sync-indicator" class="sync-indicator">
+          <span class="dot"></span>
+          <span class="sync-tag">本地存储</span>
+          <span class="sync-text">已同步</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- 总览 -->
+  <section class="admin-overview">
+    <div class="overview-grid">
+      <div class="overview-card">
+        <div class="overview-label">基层工会</div>
+        <div class="overview-value" id="ov-org-total">—</div>
+        <div class="overview-meta">已组建 <span id="ov-org-established">—</span> · 筹建中 <span id="ov-org-preparing">—</span></div>
+      </div>
+      <div class="overview-card">
+        <div class="overview-label">走访慰问</div>
+        <div class="overview-value" id="ov-visit-total">—</div>
+        <div class="overview-meta">人次 · 金额 ¥ <span id="ov-visit-amount">—</span></div>
+      </div>
+      <div class="overview-card">
+        <div class="overview-label">员工活动</div>
+        <div class="overview-value" id="ov-act-total">—</div>
+        <div class="overview-meta">场次 · 覆盖 <span id="ov-act-coverage">—</span> 人次</div>
+      </div>
+      <div class="overview-card">
+        <div class="overview-label">经费结余</div>
+        <div class="overview-value" id="ov-fund-balance">—</div>
+        <div class="overview-meta">万元</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tab -->
+  <nav class="admin-tabs">
+    <button class="tab-btn active" data-tab="01-组织建设">一、组织建设 <span class="tab-badge" id="badge-01-组织建设">0</span></button>
+    <button class="tab-btn" data-tab="02-走访慰问">二、走访慰问 <span class="tab-badge" id="badge-02-走访慰问">0</span></button>
+    <button class="tab-btn" data-tab="03-员工活动">三、员工活动 <span class="tab-badge" id="badge-03-员工活动">0</span></button>
+    <button class="tab-btn" data-tab="04-经费收支">四、经费收支 <span class="tab-badge" id="badge-04-经费收支">0</span></button>
+  </nav>
+
+  <!-- Tab 内容 -->
+  <main class="admin-main">
+    <!-- 工具条 -->
+    <div class="tab-toolbar">
+      <input type="text" class="admin-search" id="admin-search" placeholder="搜索当前表（按任意字段）" />
+      <button class="btn btn-primary" id="btn-add">＋ 新增记录</button>
+      <span class="tab-info" id="tab-info">—</span>
+    </div>
+
+    <!-- 数据表 -->
+    <div class="admin-table-wrap">
+      <table class="admin-table" id="admin-table">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+      <div id="admin-empty" class="admin-empty hidden">暂无数据，点击「新增记录」开始添加</div>
+    </div>
+  </main>
+
+  <!-- 编辑弹窗 -->
+  <div id="editor-modal" class="modal-backdrop hidden">
+    <div class="modal-panel editor-panel">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title" id="editor-title">新增记录</h2>
+          <p class="modal-subtitle" id="editor-subtitle">—</p>
+        </div>
+        <button id="editor-close" class="modal-close">×</button>
+      </div>
+      <form id="editor-form" class="editor-form">
+        <div id="editor-fields" class="editor-fields"></div>
+        <div class="editor-actions">
+          <button type="button" class="btn btn-ghost" id="editor-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 确认对话框 -->
+  <div id="confirm-modal" class="modal-backdrop hidden">
+    <div class="modal-panel confirm-panel">
+      <div class="modal-header">
+        <h2 class="modal-title" id="confirm-title">确认操作</h2>
+      </div>
+      <div class="confirm-body">
+        <p id="confirm-message">是否继续？</p>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn btn-ghost" id="confirm-cancel">取消</button>
+        <button class="btn btn-danger" id="confirm-ok">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="./seed-data.js"></script>
+  <script src="./data-store.js"></script>
+  <script src="./admin.js"></script>
+</body>
+</html>

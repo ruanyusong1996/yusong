@@ -1,0 +1,209 @@
+# 海底捞集团工会工作数据看板
+
+一个可多人协作的工会数据看板：**前台大屏看板** + **后台数据管理**，数据存在服务端，多人同时访问共享同一份数据，改完秒级同步。
+
+---
+
+## 一、快速开始
+
+```bash
+# 1. 进入目录
+cd output
+
+# 2. 安装依赖（首次运行，仅一次）
+npm install
+
+# 3. 启动服务
+npm start
+# 或指定端口
+node server.js --port=8080
+```
+
+启动后浏览器打开：
+
+| 页面 | 地址 | 用途 |
+|---|---|---|
+| 数据看板 | http://localhost:5300/ | 大屏展示，点击数字跳明细 |
+| 后台管理 | http://localhost:5300/admin.html | 增删改数据 |
+
+### 局域网内多人共享
+
+1. 找到本机内网 IP：
+   ```bash
+   # macOS
+   ipconfig getifaddr en0
+   # Linux
+   hostname -I | awk '{print $1}'
+   ```
+2. 把 `http://<你的IP>:5300/` 发给同事，例如 `http://192.168.1.20:5300/admin.html`
+3. 大家访问同一个地址 → 数据天然共享。A 改一条，B 的看板 1 秒内自动刷新。
+
+> 首次从别的电脑访问可能被系统防火墙拦截，需要允许 Node 进程接听入站连接。
+
+---
+
+## 二、文件结构
+
+```
+output/
+├── server.js            # 后端服务：REST API + SSE + 静态托管
+├── package.json         # 依赖声明
+├── server-data.json     # ★ 实际数据文件（运行时生成，改这个就是改数据）
+├── seed-data.json       # 初始数据（首次启动时复制为 server-data.json）
+├── seed-data.js         # 同上的 JS 版本（供 file:// 离线模式使用）
+│
+├── index.html           # 看板页面
+├── app.js               # 看板逻辑：汇总计算 + 图表 + 明细弹层
+├── styles.css           # 看板样式（科技蓝主题）
+│
+├── admin.html           # 后台管理页面
+├── admin.js             # 后台逻辑：表格编辑 + 校验 + 导入导出
+├── admin.css            # 后台样式
+│
+├── data-store.js        # ★ 数据访问层：自动在「API 模式」和「本地模式」间切换
+├── lib/echarts.min.js   # 本地图表库（无外网依赖）
+└── node_modules/        # 依赖（npm install 生成）
+```
+
+---
+
+## 三、数据存取原理
+
+`data-store.js` 启动时会探测同源的 `/api/health`：
+
+- **探测成功** → **API 模式**（多人共享）
+  - 读数据：`GET /api/data`
+  - 写数据：`PUT /api/data`（服务端原子写入 `server-data.json`）
+  - 实时同步：`EventSource /api/stream`（SSE）——服务端推、浏览器自动重连
+- **探测失败** → **本地模式**（单人离线）
+  - 使用 `localStorage`，跨 tab 靠 `storage` 事件同步
+
+所以：
+
+- 用 `npm start` 打开 → 自动多人共享
+- 直接双击 `index.html`（`file://`）打开 → 自动本地模式，无需后端也能看
+
+页面右上角有状态徽章：**云端共享**（青色）/ **本地存储**（绿色）/ **已断线**（红色）。
+
+---
+
+## 四、API 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/health` | 健康检查，返回 `{ok, ts, clients}` |
+| `GET` | `/api/data` | 拉取全部数据 |
+| `PUT` | `/api/data` | 覆盖保存全部数据（JSON body），成功后向所有 SSE 客户端广播 |
+| `POST` | `/api/reset` | 重置为 `seed-data.json` 初始数据 |
+| `GET` | `/api/stream` | SSE 事件流，事件类型：`hello` / `update` |
+
+示例：
+
+```bash
+# 查看数据
+curl http://localhost:5300/api/data
+
+# 重置数据
+curl -X POST http://localhost:5300/api/reset
+```
+
+---
+
+## 五、数据字段说明
+
+数据按 4 个模块组织，每一模块为 `{ title, subtitle, headers, rows }`：
+
+| 模块 Key | 标题 | 记录数 | 主要字段 |
+|---|---|---|---|
+| `01-组织建设` | 工会组织建设 | 20 | 工会名称、依托公司、工会主席、职工人数、组建状态、工会级别、备注 |
+| `02-走访慰问` | 员工走访慰问 | 56 | 慰问类型、员工姓名、所在大区、部门/门店、慰问日期、物品金额、事由、经办人 |
+| `03-员工活动` | 员工活动 | 52 | 活动日期、内容、形式、类型、区域、组织部门、覆盖人数、支出金额 |
+| `04-经费收支` | 工会经费收支 | 7 | 工会名称、收支类型、经费项目、年初金额、支出金额、结余、事由、经办人 |
+
+看板上的所有汇总数字（工会总数、已组建数、走访人次、活动场次、经费结余……）都是**从明细实时计算**的，不是写死的。
+
+---
+
+## 六、部署到 Railway（5 分钟拿到公网链接）
+
+Railway 每月送 **$5 免费额度**，你这服务内存 60MB、流量几乎为零，跑几个月都没问题。部署后拿到一个 `https://xxx.up.railway.app` 的固定链接，**关电脑也不影响**，可发给任何人访问。
+
+### 步骤 1：把代码推到 GitHub
+
+```bash
+cd output            # 进入项目目录
+
+# 如果你已经有 GitHub 账号并配置了 SSH key
+git init
+git add .
+git commit -m "init: 工会数据看板"
+git branch -M main
+git remote add origin git@github.com:<你的用户名>/gh-dashboard.git
+git push -u origin main
+```
+
+> 还没配 SSH key？最快的方式是用 [GitHub CLI](https://cli.github.com/)：`brew install gh && gh auth login`，然后 `gh repo create gh-dashboard --public --source=. --push` 一行搞定。
+>
+> 或者用 HTTPS：`git remote add origin https://github.com/<用户名>/gh-dashboard.git`，第一次推送要输用户名 + [Personal Access Token](https://github.com/settings/tokens)。
+
+### 步骤 2：在 Railway 创建项目
+
+1. 打开 https://railway.app/new
+2. 点击 **Deploy from GitHub repo**
+3. 授权 Railway 访问你的 GitHub，选择刚才创建的 `gh-dashboard` 仓库
+4. Railway 自动检测到 Node 项目，按 `railway.toml` 配置开始构建部署
+
+### 步骤 3：拿到公网链接
+
+部署完成后：
+1. 在 Railway 项目页点击你的服务
+2. 切到 **Settings** → **Networking** → **Generate Domain**
+3. 复制生成的 `https://xxx.up.railway.app` —— 这就是你的公网链接
+
+### 步骤 4：把链接发给大家
+
+看板：`https://xxx.up.railway.app/`
+后台：`https://xxx.up.railway.app/admin.html`
+
+两个人同时打开后台，**任一人改动，另一人秒级看到**。
+
+> ⚠️ **重要 - 数据持久化**：Railway 容器**重启时 `server-data.json` 会丢失**。免费版容器会因为「不活跃」被自动休眠，唤醒时磁盘重置。
+>
+> **解决**：在后台页面 → 顶部 → **「导出 JSON」** 下载一份本地备份；或者每次大改后都下载一份。
+>
+> **进阶**：如果你想真正长期持久，可以加一个 Railway 的 Postgres / Redis / Volume，告诉我我可以帮改。
+
+### 备选：自有服务器 + PM2
+
+```bash
+# 上传 output/ 到服务器
+npm install -g pm2
+cd output && npm install
+pm2 start server.js --name gh-dashboard
+pm2 save && pm2 startup
+```
+
+Nginx 反代必须关缓冲（SSE 必需）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:5300;
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_set_header Host $host;
+    proxy_buffering off;          # ★ SSE 必需
+    proxy_cache off;
+    proxy_read_timeout 3600s;
+}
+```
+
+
+---
+
+## 七、注意事项
+
+1. **并发写入**：服务端对写操作做了串行化（`writeChain`）+ 原子替换（先写 `.tmp` 再 rename），避免并发把文件写坏。
+2. **多人同时改同一条**：采用「后写覆盖」策略（last-write-wins）。如果需要字段级合并或版本冲突检测，需要再加一层乐观锁。
+3. **没有登录鉴权**：目前接口开放，任何能访问该地址的人都能改数据。如需限制，可在 `server.js` 加一层简单的 Token 校验（如 `Authorization: Bearer xxx`）。
+4. **数据备份**：直接复制 `server-data.json` 即可；后台页面的「导出 JSON」也能下载快照。
+5. **SSE 与代理**：经 Nginx / 云负载均衡时务必关闭响应缓冲，否则推送会被攒着不发出。

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>海底捞集团工会工作数据看板</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- 顶部标题 -->
+  <header class="header-bar">
+    <div class="header-decoration-left"></div>
+    <div class="header-decoration-right"></div>
+    <div class="header-content">
+      <h1 class="title-main">━━━━━━&nbsp;&nbsp;&nbsp;海底捞集团工会工作数据看板&nbsp;&nbsp;&nbsp;━━━━━━</h1>
+      <p class="subtitle">
+        <span>数据截止 2026 年 10 月 13 日</span>
+        <span class="divider">|</span>
+        <span>数据来源：公司工会基础信息收集表</span>
+        <span class="divider">|</span>
+        <span class="highlight">点击带下划线数字可跳转明细</span>
+        <span class="divider">|</span>
+        <a href="./admin.html" class="admin-link" target="_blank">后台管理 »</a>
+        <span class="divider">|</span>
+        <span id="sync-badge" class="sync-badge">
+          <span class="sync-tag">本地存储</span>
+          <span class="sync-text">已就绪</span>
+        </span>
+      </p>
+    </div>
+  </header>
+
+  <!-- 主体 -->
+  <main class="main-container">
+
+    <!-- 模块一：组织建设 -->
+    <section class="module">
+      <div class="module-header">
+        <span class="module-title">▍ 一、组织建设情况</span>
+        <button class="module-action" data-detail="01-组织建设">查看明细 »</button>
+      </div>
+
+      <div class="row row-12">
+        <div class="col col-5">
+          <div class="sub-card">
+            <div class="sub-card-title">工会数量 × 组建状态统计（单位：个）</div>
+            <div class="metric-row metric-row-3">
+              <div class="metric-card clickable" data-detail="01-组织建设">
+                <div class="metric-label">基层工会总数</div>
+                <div class="metric-value" data-metric="org-total">—</div>
+                <div class="metric-unit">个</div>
+              </div>
+              <div class="metric-card clickable" data-detail="01-组织建设" data-filter='{"key":"组建状态","value":"已组建"}'>
+                <div class="metric-label">已组建</div>
+                <div class="metric-value" data-metric="org-established">—</div>
+                <div class="metric-unit">个</div>
+              </div>
+              <div class="metric-card clickable" data-detail="01-组织建设" data-filter='{"key":"组建状态","value":"筹建中"}'>
+                <div class="metric-label">筹建中</div>
+                <div class="metric-value" data-metric="org-preparing">—</div>
+                <div class="metric-unit">个</div>
+              </div>
+            </div>
+            <div id="chart-org-pie" class="chart-area"></div>
+          </div>
+        </div>
+
+        <div class="col col-7">
+          <div class="sub-card">
+            <div class="sub-card-title">工会级别 × 组建状态统计（单位：个）</div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>工会级别</th>
+                  <th>已组建</th>
+                  <th>筹建中</th>
+                  <th>合计</th>
+                </tr>
+              </thead>
+              <tbody id="org-level-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模块二：走访慰问 -->
+    <section class="module">
+      <div class="module-header">
+        <span class="module-title">▍ 二、走访慰问情况</span>
+        <button class="module-action" data-detail="02-走访慰问">查看明细 »</button>
+      </div>
+
+      <div class="row row-2">
+        <div class="col">
+          <div class="sub-card">
+            <div class="metric-row metric-row-2">
+              <div class="metric-card clickable" data-detail="02-走访慰问">
+                <div class="metric-label">走访慰问人次</div>
+                <div class="metric-value" data-metric="visit-total">—</div>
+                <div class="metric-unit">人次</div>
+              </div>
+              <div class="metric-card clickable" data-detail="02-走访慰问">
+                <div class="metric-label">慰问品总金额</div>
+                <div class="metric-value" data-metric="visit-amount">—</div>
+                <div class="metric-unit">元</div>
+              </div>
+            </div>
+            <div id="chart-visit-type" class="chart-area"></div>
+          </div>
+        </div>
+
+        <div class="col">
+          <div class="sub-card">
+            <div class="sub-card-title">各大区（区域负责人）走访人数</div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>所在大区 / 负责人</th>
+                  <th>走访人次</th>
+                  <th>慰问品金额（元）</th>
+                </tr>
+              </thead>
+              <tbody id="visit-areas-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模块三：员工活动 -->
+    <section class="module">
+      <div class="module-header">
+        <span class="module-title">▍ 三、员工活动情况</span>
+        <button class="module-action" data-detail="03-员工活动">查看明细 »</button>
+      </div>
+
+      <div class="row row-1">
+        <div class="col">
+          <div class="sub-card">
+            <div class="metric-row metric-row-3">
+              <div class="metric-card clickable" data-detail="03-员工活动">
+                <div class="metric-label">活动总数量</div>
+                <div class="metric-value" data-metric="act-total">—</div>
+                <div class="metric-unit">场</div>
+              </div>
+              <div class="metric-card clickable" data-detail="03-员工活动">
+                <div class="metric-label">覆盖总人次</div>
+                <div class="metric-value" data-metric="act-coverage">—</div>
+                <div class="metric-unit">人次</div>
+              </div>
+              <div class="metric-card clickable" data-detail="03-员工活动">
+                <div class="metric-label">活动支出总额</div>
+                <div class="metric-value" data-metric="act-spend">—</div>
+                <div class="metric-unit">元</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row row-2">
+        <div class="col">
+          <div class="sub-card">
+            <div class="sub-card-title">按活动形式统计</div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>活动形式</th>
+                  <th>场次</th>
+                </tr>
+              </thead>
+              <tbody id="act-forms-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="col">
+          <div class="sub-card">
+            <div class="sub-card-title">按活动类型统计</div>
+            <div id="chart-activity-type" class="chart-area chart-tall"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模块四：经费收支 -->
+    <section class="module">
+      <div class="module-header">
+        <span class="module-title">▍ 四、经费收支情况</span>
+        <button class="module-action" data-detail="04-经费收支">查看明细 »</button>
+      </div>
+
+      <div class="row row-1">
+        <div class="col">
+          <div class="sub-card">
+            <div class="metric-row metric-row-3">
+              <div class="metric-card clickable" data-detail="04-经费收支">
+                <div class="metric-label">年初金额合计</div>
+                <div class="metric-value" data-metric="fund-initial">—</div>
+                <div class="metric-unit">万元</div>
+              </div>
+              <div class="metric-card clickable" data-detail="04-经费收支">
+                <div class="metric-label">支出金额合计</div>
+                <div class="metric-value" data-metric="fund-spend">—</div>
+                <div class="metric-unit">万元</div>
+              </div>
+              <div class="metric-card clickable" data-detail="04-经费收支">
+                <div class="metric-label">当前结余</div>
+                <div class="metric-value" data-metric="fund-balance">—</div>
+                <div class="metric-unit">万元</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row row-1">
+        <div class="col">
+          <div class="sub-card">
+            <div class="sub-card-title">各工会经费明细（万元）</div>
+            <div id="chart-fund-bar" class="chart-area chart-tall"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer-text">
+      <p>© 海底捞集团工会 · 数据看板 · 设计参考 Excel 「数据看板」sheet1 科技蓝主题</p>
+    </footer>
+  </main>
+
+  <!-- 详情模态层 -->
+  <div id="detail-modal" class="modal-backdrop hidden">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <h2 id="modal-title" class="modal-title">明细数据</h2>
+          <p id="modal-subtitle" class="modal-subtitle"></p>
+        </div>
+        <div class="modal-tools">
+          <input id="modal-search" type="text" placeholder="搜索..." class="modal-search" />
+          <button id="modal-close" class="modal-close">×</button>
+        </div>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="./lib/echarts.min.js"></script>
+  <script src="./seed-data.js"></script>
+  <script src="./data-store.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
