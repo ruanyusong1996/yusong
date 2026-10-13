@@ -7,57 +7,16 @@ const SHEET_TITLES = {
   '03-员工活动': '员工活动',
   '04-经费收支': '工会经费收支',
 };
-
-// 字段类型定义（按表头配置输入控件）
-const FIELD_DEFS = {
-  '01-组织建设': {
-    '工会名称': { type: 'text', required: true, full: true },
-    '依托公司': { type: 'text', required: true, full: true },
-    '工会主席': { type: 'text' },
-    '职工人数': { type: 'number', min: 0 },
-    '组建状态': { type: 'select', options: ['已组建', '筹建中'], required: true },
-    '工会级别': { type: 'select', options: ['一级工会', '二级工会', '三级工会'], required: true },
-    '备注': { type: 'textarea', full: true },
-  },
-  '02-走访慰问': {
-    '慰问类型': { type: 'select', options: ['员工直系亲属重大疾病', '员工本人重大疾病', '其他'], required: true },
-    '员工姓名': { type: 'text', required: true },
-    '所在大区': { type: 'text', required: true },
-    '员工所在部门/门店': { type: 'text', required: true },
-    '慰问日期': { type: 'date' },
-    '慰问物品金额（元）': { type: 'number', min: 0 },
-    '具体事由': { type: 'textarea', full: true },
-    '经办人': { type: 'text' },
-    '备注': { type: 'textarea', full: true },
-  },
-  '03-员工活动': {
-    '活动日期': { type: 'date', required: true },
-    '活动内容': { type: 'text', required: true, full: true },
-    '活动形式': { type: 'select', options: ['线下活动', '线上活动'], required: true },
-    '活动类型': { type: 'select', options: ['社团活动', '节日主题活动', '属地关爱', '文体活动', '培训讲座', '公益活动', '技能竞赛'], required: true },
-    '活动区域': { type: 'text' },
-    '组织部门': { type: 'text' },
-    '覆盖人数': { type: 'number', min: 0 },
-    '支出金额（元）': { type: 'number', min: 0 },
-    '备注': { type: 'textarea', full: true },
-  },
-  '04-经费收支': {
-    '工会名称': { type: 'text', required: true },
-    '工会全称': { type: 'text', full: true },
-    '收支类型': { type: 'select', options: ['收入', '支出'], required: true },
-    '经费项目': { type: 'select', options: ['上级工会反拨', '会员会费', '其他收入', '活动支出', '慰问支出', '培训支出', '其他支出'], required: true },
-    '年初金额': { type: 'number', min: 0 },
-    '支出金额': { type: 'number', min: 0 },
-    '当前结余（元）': { type: 'number' },
-    '当前结余（万元）': { type: 'number' },
-    '事由摘要': { type: 'textarea', full: true },
-    '经办人': { type: 'text' },
-    '备注': { type: 'textarea', full: true },
-  },
+const SHEET_ICON = {
+  '01-组织建设': '🏛️',
+  '02-走访慰问': '🤝',
+  '03-员工活动': '🎉',
+  '04-经费收支': '💰',
 };
 
 let currentTab = SHEETS[0];
 let DATA = null;
+let SCHEMA = null;  // 当前 sheet 的 schema: { headers, schema: { [field]: def } }
 
 // ============ 工具 ============
 function escapeHtml(s) {
@@ -98,8 +57,6 @@ function refreshSyncBadge() {
   const tag = el.querySelector('.sync-tag');
   if (tag) tag.textContent = status.mode === 'api' ? '云端共享' : '本地存储';
 
-  // 三态：断线 / 已同步（带时间戳）/ 已就绪
-  // 注意：必须处理"恢复"分支，否则一旦显示断线就再也回不来
   if (status.mode === 'api') {
     if (!status.connected) {
       setSync('error', '已断线，正在重连…');
@@ -136,27 +93,17 @@ function confirmDialog(message, title = '确认操作') {
   });
 }
 
-// ============ 派生指标 ============
-function computeMetrics() {
-  if (!DATA) return null;
-  const org = DATA['01-组织建设'].rows;
-  const visit = DATA['02-走访慰问'].rows;
-  const act = DATA['03-员工活动'].rows;
-  const fund = DATA['04-经费收支'].rows;
-
-  return {
-    'org-total': org.length,
-    'org-established': org.filter(r => r[5] === '已组建').length,
-    'org-preparing': org.filter(r => r[5] === '筹建中').length,
-    'visit-total': visit.length,
-    'visit-amount': visit.reduce((s, r) => s + (Number(r[6]) || 0), 0),
-    'act-total': act.length,
-    'act-coverage': act.reduce((s, r) => s + (Number(r[7]) || 0), 0),
-    'fund-balance': fund.reduce((s, r) => s + (Number(r[9]) || 0), 0),
-  };
+// ============ 数据刷新 ============
+function refreshAll() {
+  DATA = DashboardStore.getData();
+  SCHEMA = DashboardStore.getSchema(currentTab);
+  refreshOverview();
+  renderTable();
+  updateSchemaIndicator();
 }
 
 function refreshOverview() {
+  if (!DATA) return;
   const m = computeMetrics();
   if (!m) return;
   document.getElementById('ov-org-total').textContent = m['org-total'];
@@ -168,19 +115,50 @@ function refreshOverview() {
   document.getElementById('ov-act-coverage').textContent = m['act-coverage'];
   document.getElementById('ov-fund-balance').textContent = Number(m['fund-balance'].toFixed(2));
 
-  // 角标
   SHEETS.forEach(k => {
     const el = document.getElementById('badge-' + k);
-    if (el) el.textContent = DATA[k].rows.length;
+    if (el) el.textContent = (DATA[k] && DATA[k].rows) ? DATA[k].rows.length : 0;
   });
+}
+
+// ============ 派生指标 ============
+function computeMetrics() {
+  if (!DATA) return null;
+  const org = DATA['01-组织建设'].rows;
+  const visit = DATA['02-走访慰问'].rows;
+  const act = DATA['03-员工活动'].rows;
+  const fund = DATA['04-经费收支'].rows;
+  const orgHeaders = DATA['01-组织建设'].headers;
+  const visitHeaders = DATA['02-走访慰问'].headers;
+  const actHeaders = DATA['03-员工活动'].headers;
+  const fundHeaders = DATA['04-经费收支'].headers;
+
+  const get = (row, headers, name) => DashboardStore.pickValue(row, headers, name);
+
+  return {
+    'org-total': org.length,
+    'org-established': org.filter(r => get(r, orgHeaders, '组建状态') === '已组建').length,
+    'org-preparing': org.filter(r => get(r, orgHeaders, '组建状态') === '筹建中').length,
+    'visit-total': visit.length,
+    'visit-amount': visit.reduce((s, r) => s + (Number(get(r, visitHeaders, '慰问物品金额（元）')) || 0), 0),
+    'act-total': act.length,
+    'act-coverage': act.reduce((s, r) => s + (Number(get(r, actHeaders, '覆盖人数')) || 0), 0),
+    'fund-balance': fund.reduce((s, r) => {
+      const wan = Number(get(r, fundHeaders, '当前结余（万元）'));
+      if (Number.isFinite(wan)) return s + wan;
+      const yuan = Number(get(r, fundHeaders, '当前结余（元）')) || 0;
+      return s + yuan / 10000;
+    }, 0),
+  };
 }
 
 // ============ 表格渲染 ============
 function renderTable() {
-  if (!DATA) return;
+  if (!DATA || !SCHEMA) return;
   const sheet = DATA[currentTab];
-  const headers = sheet.headers;
+  const headers = SCHEMA.headers;
   const rows = sheet.rows;
+  const schema = SCHEMA.schema;
   const thead = document.querySelector('#admin-table thead');
   const tbody = document.querySelector('#admin-table tbody');
   const empty = document.getElementById('admin-empty');
@@ -190,13 +168,18 @@ function renderTable() {
   const q = (document.getElementById('admin-search').value || '').trim().toLowerCase();
   let filtered = rows;
   if (q) {
-    filtered = rows.filter(r => r.some(v => v !== null && v !== undefined && String(v).toLowerCase().includes(q)));
+    filtered = rows.filter(r =>
+      headers.some(h => {
+        const v = r[h];
+        return v !== null && v !== undefined && String(v).toLowerCase().includes(q);
+      })
+    );
   }
 
   // 表头
-  thead.innerHTML = '<tr>' + headers.map((h, i) => {
-    const isIndex = i === 0;
-    return `<th class="${isIndex ? 'col-index' : ''}">${escapeHtml(h)}${isIndex ? '' : ''}</th>`;
+  thead.innerHTML = '<tr>' + headers.map(h => {
+    const cls = (schema[h] && schema[h].auto) ? 'col-index' : '';
+    return `<th class="${cls}">${escapeHtml(h)}</th>`;
   }).join('') + '<th class="col-actions">操作</th></tr>';
 
   // 行
@@ -206,14 +189,20 @@ function renderTable() {
   } else {
     empty.classList.add('hidden');
     tbody.innerHTML = filtered.map((row, displayIdx) => {
-      const realIndex = rows.indexOf(row); // 用于编辑/删除
-      return '<tr>' + row.map((v, i) => {
+      const realIndex = rows.indexOf(row);
+      const cells = headers.map(h => {
+        const def = schema[h] || {};
+        const v = row[h];
         const isEmpty = v === '' || v === null || v === undefined;
         const isLong = typeof v === 'string' && v.length > 40;
-        const cls = isEmpty ? 'empty-cell' : (i === 0 ? 'col-index' : (isLong ? 'col-long' : ''));
+        const cls = isEmpty ? 'empty-cell'
+          : def.auto ? 'col-index'
+          : isLong ? 'col-long'
+          : '';
         const content = isEmpty ? '—' : escapeHtml(v);
         return `<td class="${cls}">${content}</td>`;
-      }).join('') + `<td class="col-actions">
+      }).join('');
+      return `<tr>${cells}<td class="col-actions">
         <button class="btn btn-ghost btn-row" data-action="edit" data-index="${realIndex}">编辑</button>
         <button class="btn btn-danger btn-row" data-action="delete" data-index="${realIndex}">删除</button>
       </td></tr>`;
@@ -223,24 +212,25 @@ function renderTable() {
   info.textContent = `共 ${rows.length} 条${q ? ` · 筛选 ${filtered.length} 条` : ''}`;
 }
 
-// ============ 编辑器 ============
+// ============ 行编辑器（按 schema 渲染）============
 function openEditor(mode, index) {
+  if (!SCHEMA) return;
   const sheet = DATA[currentTab];
-  const headers = sheet.headers;
-  const defs = FIELD_DEFS[currentTab] || {};
-  const row = mode === 'edit' ? sheet.rows[index] : headers.map(() => '');
+  const headers = SCHEMA.headers;
+  const schema = SCHEMA.schema;
+  const row = mode === 'edit' ? { ...sheet.rows[index] } : {};
   const fieldsEl = document.getElementById('editor-fields');
   const titleEl = document.getElementById('editor-title');
   const subEl = document.getElementById('editor-subtitle');
 
-  titleEl.textContent = mode === 'edit' ? `编辑记录 #${row[0] || index + 1}` : '新增记录';
-  subEl.textContent = SHEET_TITLES[currentTab] || currentTab;
+  titleEl.textContent = mode === 'edit' ? `编辑记录 #${row['序号'] || (index + 1)}` : '新增记录';
+  subEl.textContent = (SHEET_ICON[currentTab] || '') + ' ' + (SHEET_TITLES[currentTab] || currentTab);
 
   fieldsEl.innerHTML = '';
 
-  headers.forEach((h, idx) => {
-    if (idx === 0) return; // 序号自动
-    const def = defs[h] || { type: 'text' };
+  headers.forEach(h => {
+    const def = schema[h] || { type: 'text' };
+    if (def.auto) return; // 序号自动
     const full = def.full || def.type === 'textarea';
     const wrap = document.createElement('div');
     wrap.className = 'editor-field' + (full ? ' full' : '');
@@ -250,14 +240,14 @@ function openEditor(mode, index) {
     wrap.appendChild(label);
 
     let input;
-    const value = row[idx] !== undefined && row[idx] !== null ? row[idx] : '';
+    const value = row[h] !== undefined && row[h] !== null ? row[h] : '';
     if (def.type === 'select') {
       input = document.createElement('select');
-      def.options.forEach(opt => {
+      (def.options || []).forEach(opt => {
         const o = document.createElement('option');
         o.value = opt;
         o.textContent = opt;
-        if (opt === value) o.selected = true;
+        if (String(opt) === String(value)) o.selected = true;
         input.appendChild(o);
       });
     } else if (def.type === 'textarea') {
@@ -270,15 +260,16 @@ function openEditor(mode, index) {
       if (def.min !== undefined) input.min = def.min;
     }
     input.name = h;
-    input.dataset.index = idx;
+    input.dataset.field = h;
     if (def.required) input.required = true;
     wrap.appendChild(input);
     fieldsEl.appendChild(wrap);
   });
 
   document.getElementById('editor-modal').classList.remove('hidden');
-  document.getElementById('editor-form').dataset.mode = mode;
-  document.getElementById('editor-form').dataset.index = index !== undefined ? index : '';
+  const form = document.getElementById('editor-form');
+  form.dataset.mode = mode;
+  form.dataset.index = index !== undefined ? index : '';
 }
 
 function closeEditor() {
@@ -288,21 +279,22 @@ function closeEditor() {
 async function submitEditor(e) {
   e.preventDefault();
   const sheet = DATA[currentTab];
-  const headers = sheet.headers;
+  const headers = SCHEMA.headers;
+  const schema = SCHEMA.schema;
   const form = e.target;
   const mode = form.dataset.mode;
   const editIndex = parseInt(form.dataset.index);
 
-  // 校验
-  const newRow = headers.map(() => '');
-  newRow[0] = 0; // 稍后自动编号
+  // 收集
+  const newRow = {};
+  headers.forEach(h => { if (schema[h] && schema[h].auto) return; newRow[h] = ''; });
   const inputs = form.querySelectorAll('input, select, textarea');
-  inputs.forEach(el => {
-    const idx = parseInt(el.dataset.index);
+  for (const el of inputs) {
+    const field = el.dataset.field;
     let val = el.value;
     if (el.type === 'number' && val !== '') val = Number(val);
-    newRow[idx] = val;
-  });
+    newRow[field] = val;
+  }
 
   // 必填校验
   for (const el of inputs) {
@@ -316,18 +308,271 @@ async function submitEditor(e) {
   setSync('syncing');
   try {
     if (mode === 'edit') {
+      // 保留序号
+      newRow['序号'] = sheet.rows[editIndex]['序号'];
       await DashboardStore.replaceRow(currentTab, editIndex, newRow);
     } else {
       await DashboardStore.addRow(currentTab, newRow);
     }
     closeEditor();
     toast(mode === 'edit' ? '已保存修改' : '已新增记录');
-    setTimeout(() => setSync('已同步'), 600);
+    setTimeout(() => refreshSyncBadge(), 600);
   } catch (err) {
     console.error(err);
     toast('保存失败：' + (err.message || err), 'error');
     setSync('error', '保存失败');
   }
+}
+
+// ============ 列管理（schema 编辑器）============
+function updateSchemaIndicator() {
+  const el = document.getElementById('schema-summary');
+  if (!el) return;
+  if (!SCHEMA) { el.textContent = ''; return; }
+  const count = SCHEMA.headers.length - 1; // 减去"序号"
+  el.textContent = `${count} 列 · 可点 "⚙ 列管理" 修改`;
+}
+
+function openSchemaEditor() {
+  if (!SCHEMA) return;
+  const sheet = DATA[currentTab];
+  const headers = SCHEMA.headers;
+  const schema = SCHEMA.schema;
+
+  document.getElementById('schema-title').textContent =
+    `${SHEET_ICON[currentTab] || ''} ${SHEET_TITLES[currentTab]} · 表结构`;
+  document.getElementById('schema-subtitle').textContent = `${headers.length - 1} 个字段（共 ${sheet.rows.length} 条数据）`;
+
+  renderSchemaList();
+  document.getElementById('schema-modal').classList.remove('hidden');
+}
+
+function closeSchemaEditor() {
+  document.getElementById('schema-modal').classList.add('hidden');
+}
+
+function renderSchemaList() {
+  const sheet = DATA[currentTab];
+  const headers = SCHEMA.headers;
+  const schema = SCHEMA.schema;
+  const listEl = document.getElementById('schema-list');
+  listEl.innerHTML = headers.map((h, idx) => {
+    const def = schema[h] || {};
+    if (def.auto) {
+      return `<li class="schema-row schema-row-auto">
+        <span class="schema-name">${escapeHtml(h)}</span>
+        <span class="schema-meta">系统列 · 自动编号</span>
+        <span class="schema-actions"></span>
+      </li>`;
+    }
+    const typeLabel = ({
+      text: '文本', number: '数字', date: '日期',
+      select: '下拉', textarea: '多行文本',
+    })[def.type] || def.type;
+    return `<li class="schema-row" data-field="${escapeHtml(h)}">
+      <span class="schema-handle">≡</span>
+      <span class="schema-name">${escapeHtml(h)}</span>
+      <span class="schema-meta">
+        <span class="schema-type schema-type-${def.type}">${typeLabel}</span>
+        ${def.required ? '<span class="schema-tag">必填</span>' : ''}
+        ${def.full ? '<span class="schema-tag">整行</span>' : ''}
+        ${def.type === 'select' ? `<span class="schema-tag">${(def.options || []).length} 项</span>` : ''}
+      </span>
+      <span class="schema-actions">
+        <button class="btn btn-ghost btn-row" data-schema-action="up" data-field="${escapeHtml(h)}" ${idx <= 1 ? 'disabled' : ''}>↑</button>
+        <button class="btn btn-ghost btn-row" data-schema-action="down" data-field="${escapeHtml(h)}" ${idx >= headers.length - 1 ? 'disabled' : ''}>↓</button>
+        <button class="btn btn-ghost btn-row" data-schema-action="edit" data-field="${escapeHtml(h)}">编辑</button>
+        <button class="btn btn-danger btn-row" data-schema-action="del" data-field="${escapeHtml(h)}">删除</button>
+      </span>
+    </li>`;
+  }).join('');
+}
+
+// 新增列弹窗
+async function promptAddColumn(positionAfterField) {
+  const sheet = DATA[currentTab];
+  const headers = SCHEMA.headers;
+
+  // 用一个简单的三层 modal：先选类型，再填字段
+  const newFieldHtml = `
+    <div class="add-col-form">
+      <label>列名（必填）<input id="ac-name" type="text" placeholder="如：联系电话" /></label>
+      <label>类型
+        <select id="ac-type">
+          <option value="text">文本</option>
+          <option value="number">数字</option>
+          <option value="date">日期</option>
+          <option value="select">下拉选择</option>
+          <option value="textarea">多行文本</option>
+        </select>
+      </label>
+      <label id="ac-options-wrap" style="display:none">下拉选项（每行一个）
+        <textarea id="ac-options" placeholder="选项1&#10;选项2"></textarea>
+      </label>
+      <div class="ac-flags">
+        <label><input type="checkbox" id="ac-required" /> 必填</label>
+        <label><input type="checkbox" id="ac-full" /> 占满整行</label>
+      </div>
+    </div>
+  `;
+  try {
+    await showMiniModal('新增列', newFieldHtml, async (root) => {
+      const nameEl = root.querySelector('#ac-name');
+      const typeEl = root.querySelector('#ac-type');
+      const requiredEl = root.querySelector('#ac-required');
+      const fullEl = root.querySelector('#ac-full');
+      const optionsEl = root.querySelector('#ac-options');
+      if (!nameEl || !typeEl) { toast('表单未就绪', 'error'); return false; }
+      const name = nameEl.value.trim();
+      if (!name) { toast('请输入列名', 'error'); return false; }
+      if (headers.includes(name)) { toast('已存在同名列', 'error'); return false; }
+      const type = typeEl.value;
+      const required = requiredEl ? requiredEl.checked : false;
+      const full = fullEl ? fullEl.checked : false;
+      let options;
+      if (type === 'select') {
+        options = (optionsEl ? optionsEl.value : '').split('\n').map(s => s.trim()).filter(Boolean);
+        if (!options.length) { toast('下拉选项至少 1 项', 'error'); return false; }
+      }
+      try {
+        setSync('syncing');
+        await DashboardStore.addColumn(currentTab, name, { type, required, full, options }, positionAfterField);
+        SCHEMA = DashboardStore.getSchema(currentTab);
+        renderSchemaList();
+        updateSchemaIndicator();
+        toast('已新增列');
+        setTimeout(() => refreshSyncBadge(), 600);
+        return true;
+      } catch (e) {
+        toast('新增失败：' + e.message, 'error');
+        setSync('error', '新增失败');
+        return false;
+      }
+    }, () => {
+      // 切类型时显示/隐藏选项区
+      const root = document.getElementById('mini-modal-content');
+      if (!root) return;
+      const sel = root.querySelector('#ac-type');
+      const wrap = root.querySelector('#ac-options-wrap');
+      if (!sel || !wrap) return;
+      wrap.style.display = sel.value === 'select' ? '' : 'none';
+      sel.addEventListener('change', () => {
+        wrap.style.display = sel.value === 'select' ? '' : 'none';
+      });
+    });
+  } catch (e) {
+    console.error('[promptAddColumn]', e);
+    toast('弹窗异常：' + e.message, 'error');
+  }
+}
+
+// 编辑字段弹窗（含下拉选项编辑）
+async function promptEditColumn(fieldName) {
+  const schema = SCHEMA.schema;
+  const def = { ...schema[fieldName] };
+  const optionsText = (def.options || []).join('\n');
+
+  const html = `
+    <div class="add-col-form">
+      <label>列名（必填）<input id="ec-name" type="text" value="${escapeHtml(fieldName)}" /></label>
+      <label>类型
+        <select id="ec-type">
+          <option value="text" ${def.type==='text'?'selected':''}>文本</option>
+          <option value="number" ${def.type==='number'?'selected':''}>数字</option>
+          <option value="date" ${def.type==='date'?'selected':''}>日期</option>
+          <option value="select" ${def.type==='select'?'selected':''}>下拉选择</option>
+          <option value="textarea" ${def.type==='textarea'?'selected':''}>多行文本</option>
+        </select>
+      </label>
+      <label id="ec-options-wrap" style="${def.type==='select'?'':'display:none'}">下拉选项（每行一个，可增删改）
+        <textarea id="ec-options" rows="6">${escapeHtml(optionsText)}</textarea>
+        <small class="muted">修改后，新记录使用新选项；历史记录的旧选项值会保留，但不再出现在下拉里。</small>
+      </label>
+      <div class="ac-flags">
+        <label><input type="checkbox" id="ec-required" ${def.required?'checked':''} /> 必填</label>
+        <label><input type="checkbox" id="ec-full" ${def.full?'checked':''} /> 占满整行</label>
+      </div>
+    </div>
+  `;
+  try {
+    await showMiniModal('编辑列', html, async (root) => {
+      const ecName = root.querySelector('#ec-name');
+      const ecType = root.querySelector('#ec-type');
+      const ecOptions = root.querySelector('#ec-options');
+      const ecRequired = root.querySelector('#ec-required');
+      const ecFull = root.querySelector('#ec-full');
+      if (!ecName || !ecType) { toast('编辑表单未就绪', 'error'); return false; }
+      const newName = ecName.value.trim();
+      if (!newName) { toast('请输入列名', 'error'); return false; }
+      const newType = ecType.value;
+      const required = ecRequired ? ecRequired.checked : false;
+      const full = ecFull ? ecFull.checked : false;
+      let options = def.options;
+      if (newType === 'select') {
+        options = (ecOptions ? ecOptions.value : '').split('\n').map(s => s.trim()).filter(Boolean);
+        if (!options.length) { toast('下拉选项至少 1 项', 'error'); return false; }
+      }
+      try {
+        setSync('syncing');
+        if (newName !== fieldName) {
+          await DashboardStore.renameColumn(currentTab, fieldName, newName);
+        }
+        await DashboardStore.updateColumn(currentTab, newName, { type: newType, required, full, options });
+        toast('已保存');
+        setTimeout(() => refreshSyncBadge(), 600);
+        return true;
+      } catch (e) {
+        toast('保存失败：' + e.message, 'error');
+        setSync('error', '保存失败');
+        return false;
+      }
+    }, (root) => {
+      const sel = root.querySelector('#ec-type');
+      const wrap = root.querySelector('#ec-options-wrap');
+      if (!sel || !wrap) return;
+      sel.addEventListener('change', () => {
+        wrap.style.display = sel.value === 'select' ? '' : 'none';
+      });
+    });
+  } catch (e) {
+    console.error('[promptEditColumn]', e);
+    toast('弹窗异常：' + e.message, 'error');
+  }
+}
+
+/** 通用小弹窗（无嵌套关闭） */
+function showMiniModal(title, htmlBody, onConfirm, onShow) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('mini-modal');
+    document.getElementById('mini-modal-title').textContent = title;
+    document.getElementById('mini-modal-content').innerHTML = htmlBody;
+    modal.classList.remove('hidden');
+
+    const ok = document.getElementById('mini-modal-ok');
+    const cancel = document.getElementById('mini-modal-cancel');
+    const close = document.getElementById('mini-modal-close');
+    const root = document.getElementById('mini-modal-content');
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      ok.removeEventListener('click', okFn);
+      cancel.removeEventListener('click', cancelFn);
+      close.removeEventListener('click', cancelFn);
+    };
+    const okFn = async () => {
+      const ok = await onConfirm(root);
+      if (ok) { cleanup(); resolve(true); }
+    };
+    const cancelFn = () => { cleanup(); resolve(false); };
+
+    ok.addEventListener('click', okFn);
+    cancel.addEventListener('click', cancelFn);
+    close.addEventListener('click', cancelFn);
+    if (onShow) onShow(root);
+
+    // enter 直接确认
+    root.onkeydown = (e) => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); okFn(); } };
+  });
 }
 
 // ============ 事件绑定 ============
@@ -338,7 +583,9 @@ function bindTabs() {
       btn.classList.add('active');
       currentTab = btn.dataset.tab;
       document.getElementById('admin-search').value = '';
+      SCHEMA = DashboardStore.getSchema(currentTab);
       renderTable();
+      updateSchemaIndicator();
     });
   });
 }
@@ -346,8 +593,8 @@ function bindTabs() {
 function bindToolbar() {
   document.getElementById('admin-search').addEventListener('input', renderTable);
   document.getElementById('btn-add').addEventListener('click', () => openEditor('add'));
+  document.getElementById('btn-schema').addEventListener('click', openSchemaEditor);
 
-  // 表格内按钮（事件委托）
   document.querySelector('#admin-table').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -362,7 +609,7 @@ function bindToolbar() {
       try {
         await DashboardStore.deleteRow(currentTab, index);
         toast('已删除');
-        setTimeout(() => setSync('已同步'), 600);
+        setTimeout(() => refreshSyncBadge(), 600);
       } catch (err) {
         console.error(err);
         toast('删除失败：' + (err.message || err), 'error');
@@ -371,7 +618,6 @@ function bindToolbar() {
     }
   });
 
-  // 编辑器
   document.getElementById('editor-close').addEventListener('click', closeEditor);
   document.getElementById('editor-cancel').addEventListener('click', closeEditor);
   document.getElementById('editor-modal').addEventListener('click', (e) => {
@@ -379,18 +625,66 @@ function bindToolbar() {
   });
   document.getElementById('editor-form').addEventListener('submit', submitEditor);
 
-  // 顶部工具
+  // Schema 编辑器
+  document.getElementById('schema-close').addEventListener('click', closeSchemaEditor);
+  document.getElementById('schema-cancel').addEventListener('click', closeSchemaEditor);
+  document.getElementById('schema-add').addEventListener('click', () => promptAddColumn());
+  document.getElementById('schema-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'schema-modal') closeSchemaEditor();
+  });
+  document.querySelector('#schema-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-schema-action]');
+    if (!btn) return;
+    const action = btn.dataset.schemaAction;
+    const field = btn.dataset.field;
+    if (action === 'edit') {
+      await promptEditColumn(field);
+      SCHEMA = DashboardStore.getSchema(currentTab);
+      renderSchemaList();
+      updateSchemaIndicator();
+    } else if (action === 'del') {
+      const ok = await confirmDialog(
+        `确认删除列「${field}」？\n此操作将清空所有行该列的数据，且不可撤销。`,
+        '删除列'
+      );
+      if (!ok) return;
+      try {
+        setSync('syncing');
+        await DashboardStore.removeColumn(currentTab, field);
+        SCHEMA = DashboardStore.getSchema(currentTab);
+        renderSchemaList();
+        updateSchemaIndicator();
+        toast('已删除列');
+        setTimeout(() => refreshSyncBadge(), 600);
+      } catch (err) {
+        toast('删除失败：' + err.message, 'error');
+        setSync('error', '删除失败');
+      }
+    } else if (action === 'up' || action === 'down') {
+      try {
+        setSync('syncing');
+        await DashboardStore.moveColumn(currentTab, field, action === 'up' ? -1 : +1);
+        SCHEMA = DashboardStore.getSchema(currentTab);
+        renderSchemaList();
+        setTimeout(() => refreshSyncBadge(), 600);
+      } catch (err) {
+        toast('移动失败：' + err.message, 'error');
+        setSync('error', '移动失败');
+      }
+    }
+  });
+
   document.getElementById('btn-export').addEventListener('click', exportJSON);
   document.getElementById('btn-import').addEventListener('click', () => document.getElementById('file-import').click());
   document.getElementById('file-import').addEventListener('change', importJSON);
   document.getElementById('btn-reset').addEventListener('click', async () => {
-    const ok = await confirmDialog('确认重置为初始数据？所有修改将丢失', '重置数据');
+    const ok = await confirmDialog('确认重置为初始数据？所有修改（含表结构）将丢失', '重置数据');
     if (!ok) return;
     setSync('syncing');
     try {
       await DashboardStore.reset();
       toast('已重置为初始数据');
-      setTimeout(() => setSync('已同步'), 600);
+      setTimeout(() => refreshSyncBadge(), 600);
     } catch (err) {
       console.error(err);
       toast('重置失败：' + (err.message || err), 'error');
@@ -410,7 +704,7 @@ function exportJSON() {
   a.download = `工会数据看板-备份-${date}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  toast('已导出 JSON');
+  toast('已导出 JSON（含表结构）');
 }
 
 async function importJSON(e) {
@@ -419,11 +713,10 @@ async function importJSON(e) {
   try {
     const text = await file.text();
     const parsed = JSON.parse(text);
-    // 简单校验
     if (!parsed['01-组织建设'] || !parsed['04-经费收支']) {
       throw new Error('文件格式不正确，缺少关键数据表');
     }
-    const ok = await confirmDialog('确认导入此文件？将覆盖当前所有数据', '导入确认');
+    const ok = await confirmDialog('确认导入此文件？将覆盖当前所有数据（含表结构）', '导入确认');
     if (!ok) {
       e.target.value = '';
       return;
@@ -432,7 +725,7 @@ async function importJSON(e) {
     try {
       await DashboardStore.replaceAll(parsed);
       toast('已导入');
-      setTimeout(() => setSync('已同步'), 600);
+      setTimeout(() => refreshSyncBadge(), 600);
     } catch (err) {
       console.error(err);
       toast('导入失败：' + (err.message || err), 'error');
@@ -447,30 +740,28 @@ async function importJSON(e) {
 // ============ 启动 ============
 async function boot() {
   await DashboardStore.load();
-  DATA = DashboardStore.getData();
-  refreshOverview();
-  renderTable();
+  refreshAll();
+
   bindTabs();
   bindToolbar();
 
   DashboardStore.subscribe((_data, info) => {
-    // 仅状态变化（SSE 连上/断开）时只刷新徽章
     if (info && info.statusOnly) { refreshSyncBadge(); return; }
-    DATA = DashboardStore.getData();
-    refreshOverview();
-    renderTable();
+    refreshAll();
     refreshSyncBadge();
-    // 别人改了数据，提示一下
     if (info && info.source === 'remote') {
       toast('已收到云端最新数据，自动刷新');
     }
   });
   refreshSyncBadge();
 
-  // Esc 关闭编辑器
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!document.getElementById('editor-modal').classList.contains('hidden')) closeEditor();
+      if (!document.getElementById('schema-modal').classList.contains('hidden')) closeSchemaEditor();
+      if (!document.getElementById('mini-modal').classList.contains('hidden')) {
+        document.getElementById('mini-modal').classList.add('hidden');
+      }
       if (!document.getElementById('confirm-modal').classList.contains('hidden')) {
         document.getElementById('confirm-modal').classList.add('hidden');
       }

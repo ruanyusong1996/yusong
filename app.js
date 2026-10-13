@@ -18,22 +18,29 @@ const COMMON_TOOLTIP = {
   extraCssText: 'box-shadow: 0 4px 18px rgba(0,0,0,0.4);',
 };
 
-// 派生指标：从数据动态计算
+// 安全地按字段名取值（兼容对象行和数组行）
+const get = (row, headers, name) => DashboardStore.pickValue(row, headers, name);
+
+// 派生指标：从数据动态计算（全部按字段名访问，不再依赖列索引）
 function computeMetrics() {
   if (!DATA) return null;
   const org = DATA['01-组织建设'].rows;
   const visit = DATA['02-走访慰问'].rows;
   const act = DATA['03-员工活动'].rows;
   const fund = DATA['04-经费收支'].rows;
+  const orgHeaders = DATA['01-组织建设'].headers;
+  const visitHeaders = DATA['02-走访慰问'].headers;
+  const actHeaders = DATA['03-员工活动'].headers;
+  const fundHeaders = DATA['04-经费收支'].headers;
 
   // 组织建设
   const orgTotal = org.length;
-  const orgEstablished = org.filter(r => r[5] === '已组建').length;
-  const orgPreparing = org.filter(r => r[5] === '筹建中').length;
+  const orgEstablished = org.filter(r => get(r, orgHeaders, '组建状态') === '已组建').length;
+  const orgPreparing = org.filter(r => get(r, orgHeaders, '组建状态') === '筹建中').length;
   const orgByLevel = {};
   org.forEach(r => {
-    const level = r[6];
-    const status = r[5];
+    const level = get(r, orgHeaders, '工会级别') || '其他';
+    const status = get(r, orgHeaders, '组建状态');
     orgByLevel[level] = orgByLevel[level] || { 已组建: 0, 筹建中: 0 };
     if (status === '已组建' || status === '筹建中') orgByLevel[level][status]++;
   });
@@ -41,33 +48,41 @@ function computeMetrics() {
   // 走访慰问
   const visitTypes = {};
   visit.forEach(r => {
-    const t = r[1] || '其他';
+    const t = get(r, visitHeaders, '慰问类型') || '其他';
     visitTypes[t] = (visitTypes[t] || 0) + 1;
   });
   const visitAreas = {};
   visit.forEach(r => {
-    const a = r[3] || '其他';
+    const a = get(r, visitHeaders, '所在大区') || '其他';
     visitAreas[a] = (visitAreas[a] || 0) + 1;
   });
   const visitTotal = visit.length;
-  const visitAmount = visit.reduce((s, r) => s + (Number(r[6]) || 0), 0);
+  const visitAmount = visit.reduce((s, r) => s + (Number(get(r, visitHeaders, '慰问物品金额（元）')) || 0), 0);
 
   // 员工活动
   const actTotal = act.length;
-  const actCoverage = act.reduce((s, r) => s + (Number(r[7]) || 0), 0);
-  const actSpend = act.reduce((s, r) => s + (Number(r[8]) || 0), 0);
+  const actCoverage = act.reduce((s, r) => s + (Number(get(r, actHeaders, '覆盖人数')) || 0), 0);
+  const actSpend = act.reduce((s, r) => s + (Number(get(r, actHeaders, '支出金额（元）')) || 0), 0);
   const actForms = {};
-  act.forEach(r => { const f = r[3] || ''; actForms[f] = (actForms[f] || 0) + 1; });
+  act.forEach(r => { const f = get(r, actHeaders, '活动形式') || ''; actForms[f] = (actForms[f] || 0) + 1; });
   const actTypes = {};
-  act.forEach(r => { const t = r[4] || ''; actTypes[t] = (actTypes[t] || 0) + 1; });
+  act.forEach(r => { const t = get(r, actHeaders, '活动类型') || ''; actTypes[t] = (actTypes[t] || 0) + 1; });
 
-  // 经费
-  const fundInitial = fund.reduce((s, r) => s + (Number(r[6]) || 0), 0);
-  const fundSpend = fund.reduce((s, r) => s + (Number(r[7]) || 0), 0);
-  const fundBalance = fund.reduce((s, r) => s + (Number(r[9]) || 0), 0);
+  // 经费：优先使用「当前结余（万元）」；如果该列不存在则拿「当前结余（元）」再除 10000
+  const fundInitial = fund.reduce((s, r) => s + (Number(get(r, fundHeaders, '年初金额')) || 0), 0);
+  const fundSpend = fund.reduce((s, r) => s + (Number(get(r, fundHeaders, '支出金额')) || 0), 0);
+  const fundBalance = fund.reduce((s, r) => {
+    const wan = Number(get(r, fundHeaders, '当前结余（万元）'));
+    if (Number.isFinite(wan)) return s + wan;
+    const yuan = Number(get(r, fundHeaders, '当前结余（元）')) || 0;
+    return s + yuan / 10000;
+  }, 0);
   const fundList = fund.map(r => ({
-    name: r[2],
-    balance: Number(r[9]) || 0,
+    name: get(r, fundHeaders, '工会名称') || get(r, fundHeaders, '工会全称') || '未命名',
+    balance: (() => {
+      const wan = Number(get(r, fundHeaders, '当前结余（万元）'));
+      return Number.isFinite(wan) ? wan : (Number(get(r, fundHeaders, '当前结余（元）')) || 0) / 10000;
+    })(),
   }));
 
   return {
@@ -259,7 +274,12 @@ function renderTables() {
   const orgTbody = document.querySelector('#org-level-tbody');
   if (orgTbody) {
     orgTbody.innerHTML = '';
-    const levels = ['一级工会', '二级工会', '三级工会'];
+    // 自动从 orgByLevel 里枚举出全部等级；旧的硬编码三个等级作为兜底
+    const levels = Object.keys(m.org.byLevel);
+    if (!levels.length) {
+      ['一级工会', '二级工会', '三级工会'].forEach(l => { m.org.byLevel[l] = m.org.byLevel[l] || { 已组建: 0, 筹建中: 0 }; });
+      levels.push('一级工会', '二级工会', '三级工会');
+    }
     levels.forEach(level => {
       const stat = m.org.byLevel[level] || { 已组建: 0, 筹建中: 0 };
       const total = stat.已组建 + stat.筹建中;
@@ -313,27 +333,30 @@ function openDetail(sheetKey, filterRaw) {
   subtitle.innerHTML = escapeHtml(data.subtitle) + (filter ? `<span class="filter-tag">筛选：${escapeHtml(filter.key)} = "${escapeHtml(filter.value)}"</span>` : '');
 
   const rows = data.rows.slice();
-  const colCount = data.headers.length;
+  const headers = data.headers;
 
   function renderTable(filteredRows) {
     const html = ['<table class="detail-table"><thead><tr>'];
-    data.headers.forEach(h => html.push(`<th>${escapeHtml(h)}</th>`));
+    headers.forEach(h => html.push(`<th>${escapeHtml(h)}</th>`));
     html.push('</tr></thead><tbody>');
     filteredRows.forEach(r => {
       html.push('<tr>');
-      for (let i = 0; i < colCount; i++) {
-        const v = r[i];
+      headers.forEach(h => {
+        const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[h] : (() => {
+          const i = headers.indexOf(h);
+          return i >= 0 ? r[i] : '';
+        })();
         const isEmpty = v === '' || v === null || v === undefined;
         const isNum = typeof v === 'number';
         const isLongText = typeof v === 'string' && v.length > 30;
         const cls = isEmpty ? 'empty-cell' : isNum ? 'cell-number' : isLongText ? 'cell-text' : '';
         const display = isEmpty ? '—' : escapeHtml(v);
         html.push(`<td class="${cls}">${display}</td>`);
-      }
+      });
       html.push('</tr>');
     });
     if (filteredRows.length === 0) {
-      html.push(`<tr><td colspan="${colCount}" style="text-align:center; padding:32px; color:#7E93BD">暂无数据</td></tr>`);
+      html.push(`<tr><td colspan="${headers.length}" style="text-align:center; padding:32px; color:#7E93BD">暂无数据</td></tr>`);
     }
     html.push('</tbody></table>');
     body.innerHTML = html.join('');
@@ -342,12 +365,25 @@ function openDetail(sheetKey, filterRaw) {
   function applyFilters() {
     let result = rows;
     if (filter) {
-      const keyIdx = data.headers.indexOf(filter.key);
-      if (keyIdx >= 0) result = result.filter(r => String(r[keyIdx]) === filter.value);
+      result = result.filter(r => {
+        const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[filter.key] : (() => {
+          const i = headers.indexOf(filter.key);
+          return i >= 0 ? r[i] : '';
+        })();
+        return String(v) === filter.value;
+      });
     }
     const q = (search.value || '').trim().toLowerCase();
     if (q) {
-      result = result.filter(r => r.some(v => v !== null && v !== undefined && String(v).toLowerCase().includes(q)));
+      result = result.filter(r => {
+        return headers.some(h => {
+          const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[h] : (() => {
+            const i = headers.indexOf(h);
+            return i >= 0 ? r[i] : '';
+          })();
+          return v !== null && v !== undefined && String(v).toLowerCase().includes(q);
+        });
+      });
     }
     renderTable(result);
   }

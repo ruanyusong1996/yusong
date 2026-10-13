@@ -75,6 +75,8 @@
     <div class="tab-toolbar">
       <input type="text" class="admin-search" id="admin-search" placeholder="搜索当前表（按任意字段）" />
       <button class="btn btn-primary" id="btn-add">＋ 新增记录</button>
+      <button class="btn btn-ghost" id="btn-schema" title="增删改字段、编辑下拉选项">⚙ 列管理</button>
+      <span class="tab-info" id="schema-summary">—</span>
       <span class="tab-info" id="tab-info">—</span>
     </div>
 
@@ -88,7 +90,7 @@
     </div>
   </main>
 
-  <!-- 编辑弹窗 -->
+  <!-- 编辑弹窗（数据行） -->
   <div id="editor-modal" class="modal-backdrop hidden">
     <div class="modal-panel editor-panel">
       <div class="modal-header">
@@ -105,6 +107,46 @@
           <button type="submit" class="btn btn-primary">保存</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- 列管理弹窗 -->
+  <div id="schema-modal" class="modal-backdrop hidden">
+    <div class="modal-panel schema-panel">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title" id="schema-title">表结构</h2>
+          <p class="modal-subtitle" id="schema-subtitle">—</p>
+        </div>
+        <button id="schema-close" class="modal-close">×</button>
+      </div>
+      <div class="schema-body">
+        <p class="schema-hint">
+          💡 提示：点「编辑」可改字段名、类型、是否必填、是否占满整行。
+          下拉类型可在编辑里增删改选项。
+          <span class="warn">删除列会清空该列所有数据，不可撤销。</span>
+        </p>
+        <ul id="schema-list" class="schema-list"></ul>
+      </div>
+      <div class="schema-footer">
+        <button class="btn btn-ghost" id="schema-cancel">关闭</button>
+        <button class="btn btn-primary" id="schema-add">＋ 新增列</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 小弹窗（新增/编辑列） -->
+  <div id="mini-modal" class="modal-backdrop hidden">
+    <div class="modal-panel mini-panel">
+      <div class="modal-header">
+        <h2 class="modal-title" id="mini-modal-title">—</h2>
+        <button id="mini-modal-close" class="modal-close">×</button>
+      </div>
+      <div id="mini-modal-content" class="mini-content">—</div>
+      <div class="mini-actions">
+        <button class="btn btn-ghost" id="mini-modal-cancel">取消</button>
+        <button class="btn btn-primary" id="mini-modal-ok">确认</button>
+      </div>
     </div>
   </div>
 

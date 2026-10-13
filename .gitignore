@@ -13,9 +13,8 @@ yarn-error.log*
 # 运行时数据（保留在云端持久卷，不要提交）
 server-data.json
 
-# 测试产物
-test-*.png
-check-*.png
+# 测试产物（截图）
+*.png
 
 # 编辑器
 .vscode/
