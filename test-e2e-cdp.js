@@ -224,6 +224,24 @@ class CDP {
   t('图表块 4 个且 ECharts 已绘制 canvas',
     await cdp.evalJs('[...document.querySelectorAll("#modules-root canvas")].length'), 4);
 
+  // 色板容错：历史脏数据把色板存成过字符串，"#" 这种非法颜色必须被过滤掉，
+  // 否则 ECharts 抛 addColorStop 异常、整张图渲染不出来。
+  const palRobust = await cdp.evalJs(`(function(){
+    return {
+      字符串: normalizePalette('#4DD8FF,#5FE0FF,#3B82F6').length,
+      非法回退: normalizePalette(123).length,
+      过滤非法: normalizePalette(['#fff','#','',null,'不是颜色']).join(','),
+      默认色: normalizePalette(null).length,
+      colorAt返回合法色: /^#|^rgb/.test(String(colorAt(0))),
+    };
+  })()`);
+  console.log('    色板容错:', JSON.stringify(palRobust));
+  t('色板容错：逗号字符串能解析成 3 色', palRobust.字符串, 3);
+  t('色板容错：非法类型回退默认 8 色', palRobust.非法回退, 8);
+  t('色板容错：数组里的 "#" 等非法色被剔除', palRobust.过滤非法, '#fff');
+  t('色板容错：null 回退默认 8 色', palRobust.默认色, 8);
+  t('colorAt() 返回合法颜色', palRobust.colorAt返回合法色, true);
+
   // 统计表
   t('统计表块 3 个',
     await cdp.evalJs('document.querySelectorAll("#modules-root table.data-table").length'), 3);
@@ -400,6 +418,78 @@ class CDP {
   // 回到数据管理，确认三个标签可自由切换
   await clickTab('__config', '!!document.getElementById("cfg-json")', '二进配置面板');
   t('可再次切回配置面板', await cdp.evalJs('!document.getElementById("panel-config").classList.contains("hidden")'), true);
+
+  // ---------------------------------------------------------------------
+  console.log('\n【C2】后台「保存配置」不写坏色板 / 列宽（线上「图表全变黑」复盘）');
+  // 线上故障：collectConfigFromPanel 里按 k === 'theme.palette' 判断要不要把
+  // 逗号文本转成数组，但 setPath 会把键名拆成嵌套路径，Object.keys 拿到的是
+  // 'theme'，判断永远不成立 → 色板被存成字符串 → ECharts 逐字符取色拿到 '#'
+  // → addColorStop 抛异常 → 所有图表渲染成黑色。
+  const snapshot = `(async()=>{
+    const c = await (await fetch('/api/config',{credentials:'include',cache:'no-store'})).json();
+    return {
+      paletteIsArray: Array.isArray(c.theme.palette),
+      paletteLen: Array.isArray(c.theme.palette) ? c.theme.palette.length : -1,
+      metrics: (c.metrics || []).length,
+      charts: (c.charts || []).length,
+      tables: (c.tables || []).length,
+      widths: (c.modules || []).map(m => (m.columns || []).map(x => Number(x.width)).join('/')),
+      footer: (c.text || {}).footer || '',
+    };
+  })()`;
+  const beforeSave = await cdp.evalJs(snapshot);
+  console.log('    保存前:', JSON.stringify(beforeSave));
+  t('保存前色板本身就是数组', beforeSave.paletteIsArray, true);
+
+  const collected = await cdp.evalJs(`(function(){
+    const next = collectConfigFromPanel();
+    return {
+      paletteIsArray: Array.isArray(next.theme.palette),
+      paletteLen: Array.isArray(next.theme.palette) ? next.theme.palette.length : -1,
+      metrics: (next.metrics || []).length,
+      charts: (next.charts || []).length,
+      tables: (next.tables || []).length,
+      widths: (next.modules || []).map(m => (m.columns || []).map(c => Number(c.width)).join('/')),
+      footer: (next.text || {}).footer,
+    };
+  })()`);
+  console.log('    面板收集:', JSON.stringify(collected));
+  t('面板收集后色板仍是数组（不再退化成字符串）', collected.paletteIsArray, true);
+  t('色板颜色数不丢', collected.paletteLen, beforeSave.paletteLen);
+  t('指标数不丢', collected.metrics, beforeSave.metrics);
+  t('图表数不丢', collected.charts, beforeSave.charts);
+  t('统计表数不丢', collected.tables, beforeSave.tables);
+  t('模块列宽原样保留', JSON.stringify(collected.widths), JSON.stringify(beforeSave.widths));
+  t('页脚文字原样保留', collected.footer, beforeSave.footer);
+
+  // 真正点一次「保存配置」，再回读服务端
+  const saved = await cdp.evalJs(`(async()=>{
+    document.getElementById('cfg-save').click();
+    await new Promise(r => setTimeout(r, 1500));
+    const c = await (await fetch('/api/config',{credentials:'include',cache:'no-store'})).json();
+    const toastEl = document.querySelector('.toast');
+    const warnBox = document.getElementById('cfg-warn-box');
+    return {
+      paletteIsArray: Array.isArray(c.theme.palette),
+      paletteLen: Array.isArray(c.theme.palette) ? c.theme.palette.length : -1,
+      metrics: (c.metrics || []).length,
+      widths: (c.modules || []).map(m => (m.columns || []).map(x => Number(x.width)).join('/')),
+      footer: (c.text || {}).footer || '',
+      toast: toastEl ? toastEl.textContent.trim() : '',
+      warnVisible: !!warnBox && warnBox.offsetParent !== null && getComputedStyle(warnBox).display !== 'none',
+      warnText: warnBox ? warnBox.textContent.replace(/\\s+/g,' ').trim().slice(0,200) : '',
+    };
+  })()`);
+  console.log('    保存后:', JSON.stringify(saved));
+  t('保存后服务端色板仍是数组', saved.paletteIsArray, true);
+  t('保存后色板颜色数不丢', saved.paletteLen, beforeSave.paletteLen);
+  t('保存后指标数不丢', saved.metrics, beforeSave.metrics);
+  t('保存后列宽未被改写', JSON.stringify(saved.widths), JSON.stringify(beforeSave.widths));
+  t('保存后页脚未被截断', saved.footer, beforeSave.footer);
+  t('保存成功提示（不再被列宽规则拦下）', /已保存/.test(saved.toast), true);
+  t('「需要留意」提示框真实可见', saved.warnVisible, true);
+  t('提示框说明了列宽会换行', /换行/.test(saved.warnText), true);
+  await cdp.evalJs(`(()=>{const b=document.getElementById('cfg-warn-box'); if(b) b.remove();})()`);
 
   // 看板最终结构性校验：把配置改掉 → 看板应变化
   console.log('\n【D】配置改动 → 看板实时改变（配置驱动验证）');

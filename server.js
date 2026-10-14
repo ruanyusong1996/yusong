@@ -45,7 +45,7 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.2.3';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -315,7 +315,77 @@ function readData() {
   console.error('[readData] 数据文件读取失败');
   return null;
 }
-function readConfig() { return readJsonSafe(CONFIG_FILE) || readJsonSafe(CONFIG_SEED_FILE) || {}; }
+// --------------------------- 看板配置的「兜底收敛」 ---------------------------
+// 为什么要有这个：前端后台曾经有个类型 bug —— 图表色板数组被存成了逗号字符串
+// ("#4DD8FF,#5FE0FF,…")。ECharts 拿到字符串会逐字符取色，'#' 不是合法颜色，
+// 于是每张图都抛 addColorStop 异常、整片渲染成黑色，而服务端完全无感。
+// 这里对进出配置做一次强制收敛：无论客户端新旧对错，落盘/返回的配置都必须
+// 是「看板渲染得出来」的。
+
+const DEFAULT_PALETTE = ['#4DD8FF', '#5FE0FF', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+
+function isCssColor(v) {
+  if (typeof v !== 'string') return false;
+  const s = v.trim();
+  if (!s) return false;
+  return /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)
+    || /^(rgb|rgba|hsl|hsla)\(\s*[\d.%,\s/]+\)$/i.test(s)
+    || /^[a-z]{3,20}$/i.test(s);
+}
+
+function normalizeConfig(cfg) {
+  const warnings = [];
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { cfg, warnings };
+
+  // 1) 图表色板：字符串 → 数组，剔除非法颜色，空了回退默认
+  cfg.theme = cfg.theme || {};
+  let pal = cfg.theme.palette;
+  if (typeof pal === 'string') {
+    pal = pal.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean);
+    warnings.push('图表色板是字符串，已自动转成数组（原格式会让所有图表渲染失败）');
+  }
+  if (!Array.isArray(pal)) pal = [];
+  const beforePal = pal.length;
+  pal = pal.filter(isCssColor);
+  if (pal.length !== beforePal) warnings.push(`图表色板里剔除了 ${beforePal - pal.length} 个无法识别的颜色`);
+  if (!pal.length) {
+    if (beforePal || pal !== cfg.theme.palette) warnings.push('图表色板为空，已回退为默认配色');
+    pal = DEFAULT_PALETTE.slice();
+  }
+  cfg.theme.palette = pal;
+
+  // 2) 栅格列宽：非法或越界一律回退 12
+  (cfg.modules || []).forEach(m => (m.columns || []).forEach(c => {
+    const w = Number(c.width);
+    if (!Number.isFinite(w) || w <= 0 || w > 12) {
+      c.width = 12;
+      warnings.push(`模块「${m.title || m.id}」有列宽不合法，已回退为 12`);
+    } else {
+      const r = Math.round(w);
+      if (r !== w) warnings.push(`模块「${m.title || m.id}」有列宽不是整数，已取整为 ${r}`);
+      c.width = r;
+    }
+  }));
+
+  // 3) 悬空引用（只提示、不擅自删除，避免掩盖真实配置问题）
+  const metricIds = new Set((cfg.metrics || []).map(m => m.id));
+  const chartIds = new Set((cfg.charts || []).map(c => c.id));
+  const tableIds = new Set((cfg.tables || []).map(t => t.id));
+  (cfg.modules || []).forEach(m => (m.columns || []).forEach(c => (c.blocks || []).forEach(b => {
+    const miss = (b.metricIds || []).filter(x => !metricIds.has(x));
+    if (miss.length) warnings.push(`模块「${m.title || m.id}」引用了不存在的指标：${miss.join('、')}`);
+    if (b.type === 'chart' && b.refId && !chartIds.has(b.refId)) warnings.push(`模块「${m.title || m.id}」引用了不存在的图表「${b.refId}」`);
+    if (b.type === 'table' && b.refId && !tableIds.has(b.refId)) warnings.push(`模块「${m.title || m.id}」引用了不存在的统计表「${b.refId}」`);
+  })));
+
+  return { cfg, warnings: [...new Set(warnings)] };
+}
+
+function readConfig() {
+  const raw = readJsonSafe(CONFIG_FILE) || readJsonSafe(CONFIG_SEED_FILE) || {};
+  // 读的时候也收敛一次：万一磁盘上已经是坏配置，看板照样能正常显示
+  return normalizeConfig(raw).cfg;
+}
 
 // ---------------------------------------------------------------------------
 // 鉴权：密码哈希 + 会话
@@ -591,11 +661,19 @@ app.post('/api/backups/restore', requireAdmin, async (req, res) => {
   }
   try {
     const target = kind === 'config' ? CONFIG_FILE : DATA_FILE;
-    await writeJsonAtomic(target, parsed, 'before-restore');
+    let payload = parsed;
+    let warnings = [];
+    if (kind === 'config') {
+      // 恢复的也可能是一份坏配置（历史快照），同样先收敛
+      const r = normalizeConfig(parsed);
+      payload = r.cfg;
+      warnings = r.warnings;
+    }
+    await writeJsonAtomic(target, payload, 'before-restore');
     if (kind === 'config') broadcast('config', { ts: new Date().toISOString(), restored: name });
     else broadcast('update', { ts: new Date().toISOString(), restored: name });
     console.log(`[restore] 已用备份 ${name} 覆盖 ${path.basename(target)}`);
-    res.json({ ok: true, kind, name, rows: kind === 'data' ? countRows(parsed) : undefined });
+    res.json({ ok: true, kind, name, rows: kind === 'data' ? countRows(payload) : undefined, warnings });
   } catch (e) {
     console.error('[restore]', e);
     res.status(500).json({ error: '恢复失败', detail: e.message });
@@ -672,10 +750,12 @@ app.put('/api/config', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: '配置缺少 modules / metrics 数组' });
   }
   try {
-    cfg._meta = { lastModified: new Date().toISOString(), modifiedBy: req.headers['x-editor'] || 'admin' };
-    await writeJsonAtomic(CONFIG_FILE, cfg);
-    broadcast('config', { ts: cfg._meta.lastModified, editorId: req.headers['x-client-id'] || null });
-    res.json({ ok: true, ts: cfg._meta.lastModified });
+    const { cfg: normalized, warnings } = normalizeConfig(cfg);
+    normalized._meta = { lastModified: new Date().toISOString(), modifiedBy: req.headers['x-editor'] || 'admin' };
+    await writeJsonAtomic(CONFIG_FILE, normalized);
+    if (warnings.length) console.warn('[PUT /api/config] 已自动修正：\n - ' + warnings.join('\n - '));
+    broadcast('config', { ts: normalized._meta.lastModified, editorId: req.headers['x-client-id'] || null });
+    res.json({ ok: true, ts: normalized._meta.lastModified, warnings });
   } catch (e) {
     console.error('[PUT /api/config] 写入失败:', e);
     res.status(500).json({ error: '配置保存失败', detail: e.message });

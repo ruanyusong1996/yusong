@@ -917,7 +917,14 @@ function readForm(root, fields) {
     else if (f.t === 'color') {
       const txt = root.querySelector(`input[type="text"][data-k="${f.k}"]`);
       v = (txt && txt.value.trim()) || el.value;
-    } else v = el.value;
+    }
+    // csvText：逗号分隔的输入框要还原成数组。
+    // 注意必须在「读取时」转换：以前在调用方按 k === 'theme.palette' 判断，
+    // 但 setPath 会把键名拆成嵌套路径，Object.keys(got) 得到的是 'theme' 不是
+    // 'theme.palette'，那个判断永远不成立 —— 图表色板因此每次保存都变成字符串，
+    // 看板所有图表随即渲染成黑色/报 addColorStop 错误。
+    else if (f.t === 'csvText') v = csvToArr(el.value);
+    else v = el.value;
     setPath(out, f.k, v);
   });
   return out;
@@ -1023,8 +1030,10 @@ const LAYOUT_FIELDS = [
   { k: 'layout.cardRadius', label: '卡片圆角（px）', t: 'number' },
 ];
 
+/** 逗号/空格分隔文本 → 数组；已经是数组就原样清洗（幂等，可重复调用） */
 function csvToArr(s) {
-  return String(s || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
+  if (Array.isArray(s)) return s.map(x => String(x).trim()).filter(Boolean);
+  return String(s == null ? '' : s).split(/[,，;；]/).map(x => x.trim()).filter(Boolean);
 }
 
 /** 读取配置面板上的所有值（含数组结构），返回新配置对象 */
@@ -1032,13 +1041,13 @@ function collectConfigFromPanel() {
   const root = document.getElementById('cfg-root');
   const next = deepCloneCfg(CFG);
 
-  // 标量字段
+  // 标量字段（逐个「叶子键」写回，避免整块替换丢掉未出现在表单里的字段）
   [TEXT_FIELDS, THEME_FIELDS, LAYOUT_FIELDS].forEach(fields => {
     const got = readForm(root, fields);
-    Object.keys(got).forEach(k => {
-      let v = got[k];
-      if (k === 'theme.palette') v = csvToArr(v);
-      setPath(next, k, v);
+    fields.forEach(f => {
+      const v = getPath(got, f.k);
+      if (v === undefined) return;
+      setPath(next, f.k, v);
     });
   });
 
@@ -1740,13 +1749,16 @@ function crossColHtml(c, i) {
 async function saveConfigFromPanel() {
   try {
     CFG = collectConfigFromPanel();
-    const errs = validateConfig(CFG);
+    const { errors: errs, warnings: warns } = validateConfig(CFG);
     if (errs.length) throw new Error(errs[0]);
+    if (warns.length) console.warn('[看板配置] 提醒：\n - ' + warns.join('\n - '));
     setSync('syncing');
     await DashboardStore.saveConfig(CFG);
     CFG = DashboardStore.getConfig() || CFG;
     renderConfigPanel();
-    toast('看板配置已保存，看板端会实时刷新');
+    if (warns.length) toast('已保存，但有 ' + warns.length + ' 处提醒：' + warns[0]);
+    else toast('看板配置已保存，看板端会实时刷新');
+    if (warns.length) showConfigWarnings(warns);
     setTimeout(() => refreshSyncBadge(), 600);
   } catch (e) {
     console.error(e);
@@ -1755,8 +1767,31 @@ async function saveConfigFromPanel() {
   }
 }
 
+/** 把「保存成功但不完美」的地方常驻显示在配置面板顶部，避免静默出错 */
+function showConfigWarnings(list) {
+  const host = document.getElementById('cfg-root');
+  if (!host) return;
+  let box = document.getElementById('cfg-warn-box');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'cfg-warn-box';
+    box.className = 'cfg-warn-box';
+    host.prepend(box);
+  }
+  box.innerHTML = `<b>⚠️ 需要留意（不影响保存）</b><ul>${list.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
+}
+
+/**
+ * 校验配置。
+ * errors   —— 会真正把看板弄坏，直接拦住保存；
+ * warnings —— 不拦，但必须告诉用户（否则会「静默出错」：卡片/图表变空白）。
+ *
+ * 注意：列宽之和 > 12 属于合法排版（超出会自动换行，最初版配置就是这么排的），
+ * 只能当警告。之前把它当错误硬拦，导致用户为了能保存而去改列宽，把原本的布局改坏了。
+ */
 function validateConfig(cfg) {
   const errs = [];
+  const warns = [];
   const ids = (cfg.metrics || []).map(m => m.id);
   if (ids.some(x => !x)) errs.push('有指标未填写 ID');
   const dup = ids.filter((x, i) => ids.indexOf(x) !== i);
@@ -1778,20 +1813,34 @@ function validateConfig(cfg) {
       errs.push(`指标「${m.label || m.id}」的统计方式需要选择字段`);
     }
   });
+  // 色板：必须是合法颜色数组，否则图表会整张渲染失败
+  const pal = cfg.theme && cfg.theme.palette;
+  const palList = Array.isArray(pal) ? pal : (typeof pal === 'string' ? csvToArr(pal) : []);
+  const badColors = palList.filter(x => !/^#([0-9a-f]{3,8})$/i.test(String(x).trim()) && !/^(rgb|rgba|hsl|hsla)\(/i.test(String(x).trim()) && !/^[a-z]{3,20}$/i.test(String(x).trim()));
+  if (!palList.length) errs.push('图表色板不能为空（图表会失去配色）');
+  else if (badColors.length) errs.push('图表色板里有无法识别的颜色：' + badColors.slice(0, 3).join('、'));
+
+  const chartIds = (cfg.charts || []).map(c => c.id);
+  const tableIds = (cfg.tables || []).map(t => t.id);
   (cfg.modules || []).forEach(m => {
-    (m.columns || []).forEach((c, ci) => {
-      const total = (m.columns || []).reduce((s, x) => s + (Number(x.width) || 0), 0);
-      if (total > 12) errs.push(`模块「${m.title}」各列宽度之和为 ${total}，超过 12 会换行显示`);
-    });
-  });
-  (cfg.modules || []).forEach(m => {
+    const widths = (m.columns || []).map(x => Number(x.width) || 0);
+    const total = widths.reduce((s, x) => s + x, 0);
+    if (total > 12) warns.push(`模块「${m.title}」各列宽度之和为 ${total}，超出部分会自动换行显示`);
     (m.columns || []).forEach(c => {
       (c.blocks || []).forEach(b => {
-        if ((b.type === 'chart' || b.type === 'table') && !b.refId) errs.push(`模块「${m.title}」有内容块未选择${b.type === 'chart' ? '图表' : '统计表'}`);
+        if (b.type === 'chart' && !b.refId) errs.push(`模块「${m.title}」有内容块未选择图表`);
+        if (b.type === 'table' && !b.refId) errs.push(`模块「${m.title}」有内容块未选择统计表`);
+        // 悬空引用：块指向了已删除的指标/图表/统计表 → 看板上会凭空少一块，必须提示
+        const missMetrics = (b.metricIds || []).filter(x => ids.indexOf(x) < 0);
+        if (missMetrics.length) warns.push(`模块「${m.title}」有个指标组引用了不存在的指标：${missMetrics.join('、')}（该卡片会显示为空白）`);
+        if (b.type === 'chart' && b.refId && chartIds.indexOf(b.refId) < 0) warns.push(`模块「${m.title}」引用了不存在的图表「${b.refId}」`);
+        if (b.type === 'table' && b.refId && tableIds.indexOf(b.refId) < 0) warns.push(`模块「${m.title}」引用了不存在的统计表「${b.refId}」`);
       });
     });
   });
-  return errs;
+  const unused = ids.filter(id => id && !(cfg.modules || []).some(m => (m.columns || []).some(c => (c.blocks || []).some(b => (b.metricIds || []).indexOf(id) >= 0))));
+  if (unused.length) warns.push(`有 ${unused.length} 个指标没有放进任何模块，看板上看不到：${unused.slice(0, 5).join('、')}`);
+  return { errors: errs, warnings: [...new Set(warns)] };
 }
 
 // ============ 安全设置面板 ============

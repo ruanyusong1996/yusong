@@ -60,6 +60,54 @@ t "PUT 配置 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --d
 t "配置已生效" "$(cur -b $JA $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"]["pageTitle"])')" "集成测试标题"
 t "非法配置(缺 modules) 应 400" "$(code -b $JA -X PUT -H 'Content-Type: application/json' -d '{"a":1}' $BASE/api/config)" "400"
 
+echo "【4b】配置兜底收敛（复现「图表全黑」那个线上故障）"
+# 故障：后台把图表色板数组存成了字符串 "#4DD8FF,#5FE0FF,…"，
+# ECharts 逐字符取色拿到 '#' → addColorStop 抛异常 → 所有图表渲染成黑色。
+# 现在服务端必须无条件把这类配置收敛成可渲染的形态。
+python3 - <<'PY'
+import json
+c = json.load(open('/tmp/cfg-new.json'))
+c['theme']['palette'] = '#4DD8FF,#5FE0FF,#3B82F6,#10B981,#F59E0B,#EF4444,#8B5CF6,#EC4899'
+json.dump(c, open('/tmp/cfg-bad-palette.json','w'), ensure_ascii=False)
+PY
+t "色板为字符串时仍接受保存(200)" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-bad-palette.json $BASE/api/config)" "200"
+t "落盘后色板已变成数组(8)" \
+  "$(cur -b $JA $BASE/api/config | python3 -c 'import json,sys;p=json.load(sys.stdin)["theme"]["palette"];print("数组%d"%len(p) if isinstance(p,list) else type(p).__name__)')" \
+  "数组8"
+t "接口回传了自动修正说明" \
+  "$(cur -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-bad-palette.json $BASE/api/config | python3 -c 'import json,sys;print(len(json.load(sys.stdin).get("warnings",[]))>0)')" \
+  "True"
+
+python3 - <<'PY'
+import json
+c = json.load(open('/tmp/cfg-new.json'))
+c['theme']['palette'] = '#4DD8FF, 不是颜色, ,#10B981,999'
+c['modules'][0]['columns'][0]['width'] = 99          # 越界列宽
+c['modules'][0]['columns'] = c['modules'][0]['columns'][:1]
+c['modules'][0]['columns'][0]['blocks'] = [{"id":"b-x","type":"metrics","visible":True,"metricIds":["org-total","不存在的指标"]}]
+json.dump(c, open('/tmp/cfg-bad-more.json','w'), ensure_ascii=False)
+PY
+t "脏值配置仍接受保存(200)" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-bad-more.json $BASE/api/config)" "200"
+t "非法颜色已被剔除(只剩 2 个)" \
+  "$(cur -b $JA $BASE/api/config | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["theme"]["palette"]))')" \
+  "2"
+t "越界列宽已回退为 12" \
+  "$(cur -b $JA $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["modules"][0]["columns"][0]["width"])')" \
+  "12"
+t "悬空指标引用被点名警告" \
+  "$(cur -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-bad-more.json $BASE/api/config | python3 -c 'import json,sys;ws=json.load(sys.stdin).get("warnings",[]);print(1 if any("不存在的指标" in w for w in ws) else 0)')" \
+  "1"
+t "非法色板(数字类型)也会回退默认 8 色" \
+  "$(python3 -c "
+import json
+c=json.load(open('/tmp/cfg-new.json')); c['theme']['palette']=123
+json.dump(c, open('/tmp/cfg-bad-type.json','w'), ensure_ascii=False)
+" && cur -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-bad-type.json $BASE/api/config > /dev/null && \
+     cur -b $JA $BASE/api/config | python3 -c 'import json,sys;p=json.load(sys.stdin)["theme"]["palette"];print(len(p) if isinstance(p,list) else "非数组")')" \
+  "8"
+# 还原成正常配置，避免影响后续用例
+cur -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-new.json $BASE/api/config > /dev/null
+
 echo "【5】数据写入权限"
 cur -b $JA $BASE/api/data > /tmp/data-current.json
 t "后台 PUT 数据 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/data-current.json $BASE/api/data)" "200"

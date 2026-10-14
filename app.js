@@ -16,13 +16,40 @@ const E = window.ConfigEngine;
 // 工具
 // ---------------------------------------------------------------------------
 const theme = () => (CFG && CFG.theme) || {};
-const palette = () => {
-  const t = theme();
-  return (t.palette && t.palette.length) ? t.palette : ['#4DD8FF', '#5FE0FF', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
-};
+
+const DEFAULT_PALETTE = ['#4DD8FF', '#5FE0FF', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+
+/**
+ * 合法的 CSS 颜色。ECharts 拿到非法颜色会抛
+ * "Failed to execute 'addColorStop' on 'CanvasGradient'" 并让整张图渲染不出来，
+ * 所以这里必须先把脏值过滤掉。
+ */
+function isColor(v) {
+  if (typeof v !== 'string') return false;
+  const s = v.trim();
+  if (!s) return false;
+  return /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)
+    || /^(rgb|rgba|hsl|hsla)\(\s*[\d.%,\s/]+\)$/i.test(s)
+    || /^[a-z]{3,20}$/i.test(s);   // 具名颜色：red / steelblue …
+}
+
+/**
+ * 把任意来源的色板收敛成「合法颜色数组」。
+ * 兼容历史脏数据：曾被后台存成过逗号字符串（"#a,#b"），
+ * 直接当数组用会逐字符取色（'#' 不是颜色）→ 全部图表崩掉。
+ */
+function normalizePalette(raw) {
+  let list = raw;
+  if (typeof list === 'string') list = list.split(/[,，;；\s]+/);
+  if (!Array.isArray(list)) return DEFAULT_PALETTE.slice();
+  const clean = list.map(x => (typeof x === 'string' ? x.trim() : x)).filter(isColor);
+  return clean.length ? clean : DEFAULT_PALETTE.slice();
+}
+
+const palette = () => normalizePalette(theme().palette);
 const colorAt = (i) => {
   const p = palette();
-  return p[i % p.length];
+  return p[((i % p.length) + p.length) % p.length];
 };
 
 function escapeHtml(s) {

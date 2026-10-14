@@ -695,3 +695,19 @@
   flex: none; padding: 5px 14px; border: 1px solid #A32D2D; border-radius: 6px;
   background: transparent; color: #791F1F; cursor: pointer; font-size: 12px;
 }
+
+/* ========== 保存配置后的「需要留意」提示框 ========== */
+.cfg-warn-box {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid #E9A23B;
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(233, 162, 59, 0.12);
+  color: #F5D9A8;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.cfg-warn-box b { display: block; margin-bottom: 4px; color: #F2B95C; font-size: 13px; }
+.cfg-warn-box ul { margin: 0; padding-left: 18px; }
+.cfg-warn-box li { margin: 2px 0; }
