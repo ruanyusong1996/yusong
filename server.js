@@ -5,6 +5,9 @@
  *   - 数据 API:      GET/PUT /api/data, POST /api/reset
  *   - 看板配置 API:  GET/PUT /api/config
  *   - 登录鉴权:      POST /api/auth/login|logout|password, GET /api/auth/status
+ *   - 存储诊断:      GET /api/health（公开，含 persistent 标记）
+ *                    GET /api/storage（后台，数据目录/行数/备份数）
+ *   - 备份恢复:      GET /api/backups, POST /api/backups, POST /api/backups/restore
  *   - SSE 实时推送:  GET /api/stream
  *   - 静态文件托管（index.html / admin.html / login.html 等）
  *
@@ -14,10 +17,22 @@
  *
  * 启动: node server.js [--port=5300]
  *
- * 文件（都在 DATA_DIR，云端指向持久化卷即可）：
+ * 文件（都在 DATA_DIR）：
  *   server-data.json    运行数据（首次从 seed-data.json 初始化）
  *   server-config.json  看板配置（首次从 seed-config.json 初始化）
  *   server-auth.json    密码哈希（首次用默认密码生成）
+ *   backups/            每次写入前的自动快照，可一键恢复
+ *
+ * ⚠️ 数据持久化（「数据被清空」的根因所在）：
+ *   代码目录在每次重新部署时都会被平台替换掉。如果数据文件写在代码目录里，
+ *   重新部署 → 文件消失 → 启动时又用种子重新初始化 → 看起来就是「数据被清空」。
+ *   因此 DATA_DIR 的解析优先级为：
+ *     1) 环境变量 DATA_DIR
+ *     2) /data          —— Railway Volume 默认挂载点（存在且可写即自动采用）
+ *     3) <代码目录>/data
+ *     4) 代码目录本身   —— 本地开发兜底（启动日志会显著告警）
+ *   同时启动时会到各个候选目录里把已有的数据/配置/密码文件「认领」回来，
+ *   避免因为环境变量写错而切换到空目录、进而把数据丢掉。
  */
 'use strict';
 
@@ -28,11 +43,50 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = __dirname;
-// 数据目录：默认与代码同目录；云端可指向挂载的持久化卷（如 Railway Volume: /data）
-const DATA_DIR = process.env.DATA_DIR || ROOT;
+const ROOT_REAL = path.resolve(ROOT);
+
+const APP_VERSION = '1.2.0';
+
+// ---------------------------------------------------------------------------
+// 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
+// ---------------------------------------------------------------------------
+
+function isDirWritable(dir) {
+  try {
+    if (!fs.statSync(dir).isDirectory()) return false;
+    const probe = path.join(dir, '.write-probe');
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** 候选目录（按优先级）；最后一项是兜底，必然可用 */
+const DATA_DIR_CANDIDATES = (() => {
+  const list = [];
+  if (process.env.DATA_DIR) list.push({ dir: path.resolve(process.env.DATA_DIR), src: 'env' });
+  list.push({ dir: '/data', src: 'volume' });                       // Railway Volume 默认挂载点
+  list.push({ dir: path.join(ROOT_REAL, 'data'), src: 'app-data' });
+  list.push({ dir: ROOT_REAL, src: 'app-root' });                    // 兜底：本地开发
+  const seen = new Set();
+  return list.filter(x => (seen.has(x.dir) ? false : (seen.add(x.dir), true)));
+})();
+
+const PICKED = DATA_DIR_CANDIDATES.find(x => isDirWritable(x.dir)) || DATA_DIR_CANDIDATES[DATA_DIR_CANDIDATES.length - 1];
+const DATA_DIR = PICKED.dir;
+const DATA_DIR_SOURCE = PICKED.src;
+
+/** 数据是否写在「重新部署会被替换」的代码目录里 */
+const STORAGE_PERSISTENT = !(
+  DATA_DIR === ROOT_REAL || DATA_DIR.startsWith(ROOT_REAL + path.sep)
+);
+
 const DATA_FILE = path.join(DATA_DIR, 'server-data.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'server-config.json');
 const AUTH_FILE = path.join(DATA_DIR, 'server-auth.json');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const SEED_FILE = path.join(ROOT, 'seed-data.json');
 const CONFIG_SEED_FILE = path.join(ROOT, 'seed-config.json');
 const LOGIN_PAGE = path.join(ROOT, 'login.html');
@@ -60,6 +114,7 @@ let writeChain = Promise.resolve();
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
 
 function readJsonSafe(file) {
@@ -67,9 +122,11 @@ function readJsonSafe(file) {
 }
 
 /** 原子写入：先写 .tmp 再 rename，避免崩溃中途导致文件损坏 */
-function writeJsonAtomic(file, obj) {
+function writeJsonAtomic(file, obj, backupTag) {
   return writeChain = writeChain.then(() => new Promise((resolve, reject) => {
     ensureDir();
+    // 写入前先把旧版本存一份（这就是「数据被误覆盖」时的后悔药）
+    if (fs.existsSync(file)) backupFile(file, backupTag);
     const tmp = file + '.tmp';
     fs.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8', (err) => {
       if (err) return reject(err);
@@ -78,26 +135,148 @@ function writeJsonAtomic(file, obj) {
   }));
 }
 
-function initFromSeed(target, seed, label) {
-  if (fs.existsSync(target)) return;
-  const seedObj = readJsonSafe(seed);
-  if (!seedObj) { console.error(`[FATAL] 缺少 ${path.basename(seed)}，无法初始化 ${label}`); return; }
-  ensureDir();
-  fs.copyFileSync(seed, target);
-  console.log(`[init] 已从 ${path.basename(seed)} 初始化 ${path.basename(target)}`);
+// ---------------------------------------------------------------------------
+// 备份（滚动保留，可一键恢复）
+// ---------------------------------------------------------------------------
+
+const MAX_BACKUPS_PER_FILE = 40;
+
+function timeStamp(d) {
+  const t = d || new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`;
 }
+
+function backupFile(file, tag) {
+  try {
+    if (!fs.existsSync(file)) return null;
+    ensureDir();
+    const base = path.basename(file, '.json');
+    const name = `${base}.${timeStamp()}${tag ? '.' + tag : ''}.json`;
+    const dest = path.join(BACKUP_DIR, name);
+    fs.copyFileSync(file, dest);
+    pruneBackups(base);
+    return name;
+  } catch (e) {
+    console.error('[backup] 快照失败:', e.message);
+    return null;
+  }
+}
+
+function listBackups() {
+  try {
+    return fs.readdirSync(BACKUP_DIR)
+      .filter(n => n.endsWith('.json'))
+      .map(n => {
+        const st = fs.statSync(path.join(BACKUP_DIR, n));
+        return { name: n, size: st.size, mtime: st.mtime.toISOString(), mtimeMs: st.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch (_) {
+    return [];
+  }
+}
+
+function pruneBackups(base) {
+  const mine = listBackups().filter(f => f.name.startsWith(base + '.'));
+  mine.slice(MAX_BACKUPS_PER_FILE).forEach(f => {
+    try { fs.unlinkSync(path.join(BACKUP_DIR, f.name)); } catch (_) {}
+  });
+}
+
+/** 备份文件名 → 它属于哪份运行文件 */
+function backupKindOf(name) {
+  if (String(name).startsWith('server-data.')) return 'data';
+  if (String(name).startsWith('server-config.')) return 'config';
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// 启动引导：认领其它目录里的已有文件 + 首次从种子初始化
+// ---------------------------------------------------------------------------
+
+/** 在候选目录里找同一份文件（按修改时间取最新，跳过 data/backups） */
+function findExistingElsewhere(name, primaryPath) {
+  let best = null;
+  let bestT = -1;
+  for (const c of DATA_DIR_CANDIDATES) {
+    if (c.dir === DATA_DIR) continue;
+    const p = path.join(c.dir, name);
+    if (p === primaryPath) continue;
+    try {
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size > 2 && st.mtimeMs > bestT) { best = p; bestT = st.mtimeMs; }
+    } catch (_) {}
+  }
+  return best;
+}
+
+/**
+ * 确保某项运行文件在 DATA_DIR 里存在：
+ *   1) 已存在 → 直接用（绝不覆盖）
+ *   2) 不存在，但别的候选目录里有 → 认领回来（避免切换目录导致数据"消失"）
+ *   3) 都不存在 → 从种子初始化
+ */
+function ensureManagedFile(target, seedFile, label) {
+  if (fs.existsSync(target)) return 'existing';
+  ensureDir();
+
+  const name = path.basename(target);
+  const other = findExistingElsewhere(name, target);
+  if (other) {
+    try {
+      fs.copyFileSync(other, target);
+      console.warn(`[recover] ${label}：在 ${path.dirname(other)} 找到已有文件，已认领到 ${DATA_DIR}`);
+      return 'recovered';
+    } catch (e) {
+      console.error(`[recover] ${label} 认领失败:`, e.message);
+    }
+  }
+
+  if (!seedFile) return 'missing';
+  const seedObj = readJsonSafe(seedFile);
+  if (!seedObj) {
+    console.error(`[FATAL] 缺少 ${path.basename(seedFile)}，无法初始化${label}`);
+    return 'missing';
+  }
+  fs.copyFileSync(seedFile, target);
+  console.log(`[init] ${label}：已从 ${path.basename(seedFile)} 初始化 → ${target}`);
+  return 'seeded';
+}
+
+function ensureDataFile() { return ensureManagedFile(DATA_FILE, SEED_FILE, '数据'); }
+function ensureConfigFile() { return ensureManagedFile(CONFIG_FILE, CONFIG_SEED_FILE, '看板配置'); }
 
 // ---------------------------------------------------------------------------
 // 数据 / 配置
 // ---------------------------------------------------------------------------
 
-function ensureDataFile() { initFromSeed(DATA_FILE, SEED_FILE, '数据'); }
-function ensureConfigFile() { initFromSeed(CONFIG_FILE, CONFIG_SEED_FILE, '看板配置'); }
+function ensureDataFile() { return ensureManagedFile(DATA_FILE, SEED_FILE, '数据'); }
+function ensureConfigFile() { return ensureManagedFile(CONFIG_FILE, CONFIG_SEED_FILE, '看板配置'); }
+
+/** 数据行数（仅统计带 rows 的表） */
+function countRows(data) {
+  if (!data || typeof data !== 'object') return 0;
+  return Object.keys(data).reduce((s, k) => {
+    const v = data[k];
+    return s + (v && Array.isArray(v.rows) ? v.rows.length : 0);
+  }, 0);
+}
 
 function readData() {
   const d = readJsonSafe(DATA_FILE);
-  if (!d) console.error('[readData] 数据文件读取失败');
-  return d;
+  if (d) return d;
+  // 主文件读不出来（被截断/写坏）→ 用最近一份备份顶上，避免"数据全空"
+  const latest = listBackups().find(f => backupKindOf(f.name) === 'data');
+  if (latest) {
+    const b = readJsonSafe(path.join(BACKUP_DIR, latest.name));
+    if (b) {
+      console.error(`[readData] 主数据文件不可读，已临时启用备份 ${latest.name}`);
+      return b;
+    }
+  }
+  console.error('[readData] 数据文件读取失败');
+  return null;
 }
 function readConfig() { return readJsonSafe(CONFIG_FILE) || readJsonSafe(CONFIG_SEED_FILE) || {}; }
 
@@ -226,8 +405,9 @@ app.disable('etag');
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 
-// 简单访问日志
+// 简单访问日志（设 LOG_REQUESTS=0 可关闭，测试时用）
 app.use((req, _res, next) => {
+  if (process.env.LOG_REQUESTS === '0') return next();
   const t = new Date().toISOString().slice(11, 19);
   console.log(`[${t}] ${req.method} ${req.url}`);
   next();
@@ -288,7 +468,99 @@ app.post('/api/auth/password', (req, res) => {
 // --------------------------- 数据接口 --------------------------------------
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ts: Date.now(), clients: sseClients.size });
+  let dataMtime = null;
+  try { dataMtime = fs.statSync(DATA_FILE).mtime.toISOString(); } catch (_) {}
+  res.json({
+    ok: true,
+    ts: Date.now(),
+    clients: sseClients.size,
+    version: APP_VERSION,
+    // 存储是否落在「重新部署不会被替换」的目录（false = 重新部署会丢数据）
+    persistent: STORAGE_PERSISTENT,
+    storageMode: DATA_DIR_SOURCE,
+    dataMtime,
+  });
+});
+
+/**
+ * 存储诊断（仅后台）：一眼看清数据到底写在哪儿、是否持久、备份多少份。
+ * 「数据被清空」这类问题以后可以直接在这里看。
+ */
+app.get('/api/storage', requireAdmin, (_req, res) => {
+  let dataMtime = null, dataSize = 0;
+  try { const st = fs.statSync(DATA_FILE); dataMtime = st.mtime.toISOString(); dataSize = st.size; } catch (_) {}
+  const data = readData();
+  const backups = listBackups();
+  res.json({
+    persistent: STORAGE_PERSISTENT,
+    dataDir: DATA_DIR,
+    dataDirSource: DATA_DIR_SOURCE,
+    dataFile: DATA_FILE,
+    dataExists: fs.existsSync(DATA_FILE),
+    dataSize,
+    dataMtime,
+    rows: countRows(data),
+    sheets: data ? Object.keys(data).filter(k => k !== '_meta').length : 0,
+    backupDir: BACKUP_DIR,
+    backupCount: backups.length,
+    backupKinds: {
+      data: backups.filter(b => backupKindOf(b.name) === 'data').length,
+      config: backups.filter(b => backupKindOf(b.name) === 'config').length,
+    },
+    seedFile: SEED_FILE,
+    hints: STORAGE_PERSISTENT
+      ? ['数据写在持久目录里，重新部署不会丢。']
+      : ['⚠️ 数据写在代码目录里，平台重新部署/重启容器后会被替换掉，届时会退回初始种子数据。',
+         '修复：在部署平台挂载一个持久卷并把挂载路径设为 /data，然后设置环境变量 DATA_DIR=/data（只挂卷、不设变量也能自动识别）。'],
+  });
+});
+
+// --------------------------- 备份 / 恢复 ------------------------------------
+
+app.get('/api/backups', requireAdmin, (_req, res) => {
+  const list = listBackups().map(b => {
+    const kind = backupKindOf(b.name);
+    let rows = null;
+    if (kind === 'data') rows = countRows(readJsonSafe(path.join(BACKUP_DIR, b.name)));
+    return { name: b.name, kind, size: b.size, mtime: b.mtime, rows };
+  });
+  res.json({ dir: BACKUP_DIR, count: list.length, limit: MAX_BACKUPS_PER_FILE, backups: list });
+});
+
+/** 手动打一份快照 */
+app.post('/api/backups', requireAdmin, (req, res) => {
+  const kind = (req.body && req.body.kind) || 'data';
+  const file = kind === 'config' ? CONFIG_FILE : DATA_FILE;
+  const name = backupFile(file, 'manual');
+  if (!name) return res.status(500).json({ error: '备份失败（文件不存在或无权限）' });
+  res.json({ ok: true, name });
+});
+
+/** 用某份备份覆盖回去 */
+app.post('/api/backups/restore', requireAdmin, async (req, res) => {
+  const name = String((req.body && req.body.name) || '');
+  if (!/^[A-Za-z0-9._-]+\.json$/.test(name) || name.includes('..')) {
+    return res.status(400).json({ error: '备份名不合法' });
+  }
+  const kind = backupKindOf(name);
+  if (!kind) return res.status(400).json({ error: '无法识别的备份文件' });
+  const src = path.join(BACKUP_DIR, name);
+  if (!fs.existsSync(src)) return res.status(404).json({ error: '备份不存在' });
+  const parsed = readJsonSafe(src);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return res.status(400).json({ error: '备份文件内容不是合法 JSON 对象' });
+  }
+  try {
+    const target = kind === 'config' ? CONFIG_FILE : DATA_FILE;
+    await writeJsonAtomic(target, parsed, 'before-restore');
+    if (kind === 'config') broadcast('config', { ts: new Date().toISOString(), restored: name });
+    else broadcast('update', { ts: new Date().toISOString(), restored: name });
+    console.log(`[restore] 已用备份 ${name} 覆盖 ${path.basename(target)}`);
+    res.json({ ok: true, kind, name, rows: kind === 'data' ? countRows(parsed) : undefined });
+  } catch (e) {
+    console.error('[restore]', e);
+    res.status(500).json({ error: '恢复失败', detail: e.message });
+  }
 });
 
 app.get('/api/data', requireView, (_req, res) => {
@@ -302,6 +574,18 @@ app.put('/api/data', requireAdmin, async (req, res) => {
   if (!body || typeof body !== 'object') {
     return res.status(400).json({ error: '请求体必须是 JSON 对象' });
   }
+  // 兜底防误清空：一份数据里至少要有 1 张表
+  const sheetKeys = Object.keys(body).filter(k => k !== '_meta');
+  if (!sheetKeys.length) {
+    console.warn('[PUT /api/data] 收到空数据，已拒绝写入');
+    return res.status(400).json({ error: '数据为空，已拒绝写入（防止误清空）' });
+  }
+  const prevRows = countRows(readData());
+  const nextRows = countRows(body);
+  if (prevRows > 0 && nextRows === 0) {
+    console.warn(`[PUT /api/data] 写入会使总行数从 ${prevRows} 变成 0，已拒绝`);
+    return res.status(400).json({ error: `本次写入会把全部 ${prevRows} 行数据清空，已拒绝（如确实要清空，请逐表删除）` });
+  }
   try {
     body._meta = {
       ...(body._meta || {}),
@@ -309,8 +593,11 @@ app.put('/api/data', requireAdmin, async (req, res) => {
       modifiedBy: req.headers['x-editor'] || 'anonymous',
     };
     await writeJsonAtomic(DATA_FILE, body);
+    if (prevRows > 0 && nextRows < prevRows * 0.5) {
+      console.warn(`[PUT /api/data] 行数由 ${prevRows} 骤减到 ${nextRows}，已自动留一份快照可恢复`);
+    }
     broadcast('update', { ts: body._meta.lastModified, editorId: req.headers['x-client-id'] || null });
-    res.json({ ok: true, ts: body._meta.lastModified, clients: sseClients.size });
+    res.json({ ok: true, ts: body._meta.lastModified, clients: sseClients.size, rows: nextRows });
   } catch (e) {
     console.error('[PUT /api/data] 写入失败:', e);
     res.status(500).json({ error: '写入失败', detail: e.message });
@@ -426,19 +713,46 @@ app.use((_req, res) => res.status(404).json({ error: 'not found' }));
 // ---------------------------------------------------------------------------
 
 ensureDir();
-ensureDataFile();
-ensureConfigFile();
+
+const dataState = ensureDataFile();
+const configState = ensureConfigFile();
+ensureManagedFile(AUTH_FILE, null, '密码');
 const authExisted = fs.existsSync(AUTH_FILE);
 loadAuth();
 
+/** 每天最多打一份「开机检查点」，方便回溯"某天开始数据不对了" */
+(function dailyCheckpoint() {
+  if (!fs.existsSync(DATA_FILE)) return;
+  const newest = listBackups().find(f => f.name.includes('.startup.'));
+  if (newest && Date.now() - newest.mtimeMs < 24 * 3600 * 1000) return;
+  backupFile(DATA_FILE, 'startup');
+})();
+
+const bootRows = countRows(readData());
+
 const server = app.listen(PORT, () => {
-  console.log(`\n[gh-dashboard] 服务已启动`);
+  console.log(`\n[gh-dashboard] 服务已启动  v${APP_VERSION}`);
   console.log(`  看板地址:   http://localhost:${PORT}/`);
   console.log(`  后台地址:   http://localhost:${PORT}/admin.html`);
   console.log(`  健康检查:   http://localhost:${PORT}/api/health`);
-  console.log(`  数据文件:   ${DATA_FILE}`);
-  console.log(`  配置文件:   ${CONFIG_FILE}`);
+  console.log(`  ── 数据存储 ─────────────────────────────`);
+  console.log(`  数据目录:   ${DATA_DIR}   (来源: ${DATA_DIR_SOURCE})`);
+  console.log(`  数据文件:   ${DATA_FILE}   行数 ${bootRows}  (${dataState})`);
+  console.log(`  配置文件:   ${CONFIG_FILE}  (${configState})`);
   console.log(`  密码文件:   ${AUTH_FILE}`);
+  console.log(`  备份目录:   ${BACKUP_DIR}  已有 ${listBackups().length} 份`);
+  if (!STORAGE_PERSISTENT) {
+    console.log('');
+    console.log('  ⚠️⚠️  警告：数据写在「代码目录」里，平台重新部署或重建容器后会被替换，');
+    console.log('         届时数据会退回初始种子（就是"数据被清空"的现象）。');
+    console.log('         修复：挂载持久卷并把挂载路径设为 /data（Railway Volume），');
+    console.log('         可选再设环境变量 DATA_DIR=/data（不设也能自动识别 /data）。');
+    console.log('         自检命令：GET /api/storage');
+    console.log('');
+  } else {
+    console.log(`  ✅ 数据存储在持久目录中，重新部署不会丢失`);
+  }
+  console.log(`  ─────────────────────────────────────────`);
   console.log(`  登录密码:   看板 ${authExisted ? '(已设置)' : DEFAULT_PASSWORDS.dashboard} / 后台 ${authExisted ? '(已设置)' : DEFAULT_PASSWORDS.admin}`);
   console.log(`              ⚠️ 首次登录后请在后台「安全设置」里修改密码\n`);
 });

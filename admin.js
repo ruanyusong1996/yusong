@@ -1802,6 +1802,13 @@ function renderSecurityPanel() {
   const isApi = status.mode === 'api';
   root.innerHTML = `
     <section class="cfg-section">
+      <div class="cfg-head">💾 数据存储与备份</div>
+      <div class="cfg-body" id="sec-storage-body">
+        <p class="cfg-hint">正在读取存储状态…</p>
+      </div>
+    </section>
+
+    <section class="cfg-section">
       <div class="cfg-head">🔑 当前登录状态</div>
       <div class="cfg-body">
         <p class="cfg-hint">
@@ -1879,12 +1886,139 @@ function renderSecurityPanel() {
   if (b1) b1.addEventListener('click', () => doChange('dashboard', 'pw-cur-1', 'pw-new-1', 'pw-new-2', b1));
   const b2 = document.getElementById('sec-save-admin');
   if (b2) b2.addEventListener('click', () => doChange('admin', 'pw-cur-2', 'pw-new-3', 'pw-new-4', b2));
+
+  refreshStorageSection();
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 「数据存储与备份」分区：存储是否持久 + 快照列表 + 一键恢复 */
+async function refreshStorageSection() {
+  const body = document.getElementById('sec-storage-body');
+  if (!body) return;
+  let info, bk;
+  try {
+    info = await DashboardStore.getStorageInfo();
+    bk = await DashboardStore.listBackups();
+  } catch (e) {
+    body.innerHTML = `<p class="cfg-hint cfg-warn">存储状态读取失败：${escapeHtml(e.message || String(e))}</p>`;
+    return;
+  }
+  const rows = bk.backups || [];
+  const warn = (info.hints || []).map(h =>
+    `<p class="cfg-hint ${info.persistent ? '' : 'cfg-warn'}">${escapeHtml(h)}</p>`).join('');
+
+  body.innerHTML = `
+    <div class="store-status ${info.persistent ? 'is-ok' : 'is-bad'}">
+      <div class="store-line">
+        <span class="store-dot"></span>
+        <b>${info.persistent
+      ? '数据持久化：已开启 —— 重新部署 / 重启容器都不会丢数据'
+      : '数据持久化：未开启 —— 平台重新部署后数据会被重置！'}</b>
+      </div>
+      <table class="cfg-table store-table">
+        <tbody>
+          <tr><td>数据目录</td><td><code>${escapeHtml(info.dataDir || '')}</code></td></tr>
+          <tr><td>数据文件</td><td><code>${escapeHtml(info.dataFile || '')}</code></td></tr>
+          <tr><td>最近写入</td><td>${fmtTime(info.dataMtime)}</td></tr>
+          <tr><td>当前数据量</td><td>${info.sheets || 0} 张表 / ${info.rows || 0} 行</td></tr>
+          <tr><td>快照目录</td><td><code>${escapeHtml(info.backupDir || '')}</code>（共 ${info.backupCount || 0} 份）</td></tr>
+        </tbody>
+      </table>
+      ${warn}
+    </div>
+
+    <div class="cfg-subhead">最近快照（点「恢复」即可回滚到那一刻）</div>
+    ${rows.length ? `
+      <table class="cfg-table">
+        <thead><tr><th>时间</th><th>类型</th><th>内容</th><th>大小</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.slice(0, 12).map(b => `
+            <tr>
+              <td>${fmtTime(b.mtime)}</td>
+              <td>${b.kind === 'data' ? '数据' : '看板配置'}</td>
+              <td>${b.kind === 'data' ? ((b.rows === null || b.rows === undefined) ? '—' : b.rows + ' 行') : '—'}</td>
+              <td>${(b.size / 1024).toFixed(1)} KB</td>
+              <td><button class="mini-btn" type="button" data-restore="${escapeHtml(b.name)}">恢复</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`
+      : '<p class="cfg-hint">暂无快照（每次保存前后会自动生成，也可点下方按钮立即生成一份）。</p>'}
+
+    <div class="cfg-actions">
+      <button class="mini-btn" type="button" id="store-backup-now">立即备份数据</button>
+      <button class="mini-btn" type="button" id="store-refresh">刷新状态</button>
+    </div>
+  `;
+
+  body.querySelectorAll('[data-restore]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.restore;
+      const isCfg = name.indexOf('server-config.') === 0;
+      const ok = await confirmDialog(
+        `确认用这份快照覆盖当前的${isCfg ? '看板配置' : '全部数据'}？\n\n${name}\n\n覆盖前会自动把当前版本另存一份，可再恢复回来。`,
+        '恢复快照'
+      );
+      if (!ok) return;
+      try {
+        setSync('syncing');
+        await DashboardStore.restoreBackup(name);
+        SCHEMA = DashboardStore.getSchema(currentTab) || SCHEMA;
+        refreshAll();
+        await refreshStorageSection();
+        toast('已恢复到：' + name);
+        setTimeout(refreshSyncBadge, 600);
+      } catch (e) {
+        toast('恢复失败：' + (e.message || e), 'error');
+        setSync('error', '恢复失败');
+      }
+    });
+  });
+
+  const now = document.getElementById('store-backup-now');
+  if (now) now.addEventListener('click', async () => {
+    try {
+      setSync('syncing');
+      const r = await DashboardStore.createBackup('data');
+      toast('已生成快照：' + r.name);
+      await refreshStorageSection();
+      setTimeout(refreshSyncBadge, 600);
+    } catch (e) {
+      toast('备份失败：' + (e.message || e), 'error');
+      setSync('error', '备份失败');
+    }
+  });
+
+  const rf = document.getElementById('store-refresh');
+  if (rf) rf.addEventListener('click', refreshStorageSection);
 }
 
 // ============ 启动 ============
+/** 数据读取失败时的提示层（不会再拿示例数据冒充真实数据） */
+function showLoadErrorScreen(msg) {
+  const wrap = document.createElement('div');
+  wrap.className = 'load-error-screen';
+  wrap.innerHTML = `
+    <div class="les-card">
+      <div class="les-title">数据读取失败</div>
+      <div class="les-desc">${escapeHtml(String(msg))}</div>
+      <div class="les-hint">已停止加载，避免把示例数据误当成真实数据。可先刷新重试；若持续失败，请检查服务端存储与网络。</div>
+      <button class="les-btn" type="button" onclick="location.reload()">刷新重试</button>
+    </div>`;
+  document.body.appendChild(wrap);
+}
+
 async function boot() {
   const data = await DashboardStore.load();
   if (!data) {
+    const err = DashboardStore.getLoadError && DashboardStore.getLoadError();
+    if (err) { showLoadErrorScreen(err); return; }   // 读取失败 ≠ 未登录，别把人踢到登录页打转
     // 会话失效 / 未登录：回到登录页
     location.replace('/login.html?role=admin&next=/admin.html');
     return;
@@ -1901,6 +2035,7 @@ async function boot() {
       location.replace('/login.html?role=admin&next=/admin.html');
       return;
     }
+    if (info && info.loadFailed) { showLoadErrorScreen(info.error || '数据读取失败'); return; }
     if (info && info.configOnly) {
       if (!isPseudoTab(currentTab)) return;
       CFG = DashboardStore.getConfig() || CFG;

@@ -91,11 +91,21 @@ output/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/health` | 健康检查，返回 `{ok, ts, clients}` |
+| `GET` | `/api/health` | 健康检查，返回 `{ok, ts, clients, version, persistent, storageMode, dataMtime}`；**`persistent` 用来判断数据是否会随重新部署丢失** |
 | `GET` | `/api/data` | 拉取全部数据 |
-| `PUT` | `/api/data` | 覆盖保存全部数据（JSON body），成功后向所有 SSE 客户端广播 |
-| `POST` | `/api/reset` | 重置为 `seed-data.json` 初始数据 |
-| `GET` | `/api/stream` | SSE 事件流，事件类型：`hello` / `update` |
+| `PUT` | `/api/data` | 覆盖保存全部数据（JSON body），成功后向所有 SSE 客户端广播；空数据 / 会把全部行清空的写入会被拒绝（400） |
+| `POST` | `/api/reset` | 重置为 `seed-data.json` 初始数据（写前自动快照） |
+| `GET` | `/api/config` | 拉取看板配置（文字/主题/布局/模块/指标/图表/统计表） |
+| `PUT` | `/api/config` | 覆盖保存看板配置，并向所有 SSE 客户端广播 `config` 事件 |
+| `GET` | `/api/storage` | 🔒 存储诊断：数据目录、是否持久、行数、快照数量与修复建议 |
+| `GET` | `/api/backups` | 🔒 快照列表（含时间、类型、行数、大小） |
+| `POST` | `/api/backups` | 🔒 手动打一份快照 `{kind: 'data'\|'config'}` |
+| `POST` | `/api/backups/restore` | 🔒 用指定快照覆盖回去 `{name}`（覆盖前自动再存一份当前版本） |
+| `POST` | `/api/auth/login` \| `logout` \| `password` | 🔑 登录 / 退出 / 改密码 |
+| `GET` | `/api/auth/status` | 🔑 当前会话角色 |
+| `GET` | `/api/stream` | SSE 事件流，事件类型：`hello` / `update` / `config` |
+
+> 🔒 = 需要后台密码；🔑 = 鉴权相关；其余需要看板密码（`/api/health`、`/login.html` 公开）
 
 示例：
 

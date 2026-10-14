@@ -528,3 +528,20 @@ html, body {
 ::-webkit-scrollbar-track { background: var(--card-bg2); }
 ::-webkit-scrollbar-thumb { background: var(--title-bar); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ========== 未连接服务器时的显著横幅 ========== */
+.degraded-banner {
+  position: sticky;
+  top: 0;
+  z-index: 999;
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2A1200;
+  background: linear-gradient(90deg, #FFB020, #FF8A00);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+}
+
+/* ========== 通用隐藏类（兜底，权重最高） ========== */
+.hidden { display: none !important; }

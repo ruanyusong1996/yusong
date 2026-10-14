@@ -615,3 +615,61 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; margin-bottom: 10px;
 }
 #panel-config { padding-bottom: 40px; }
+
+/* ========== 数据读取失败提示层 ========== */
+.load-error-screen {
+  position: fixed; inset: 0; z-index: 3000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 12, 28, .88); padding: 24px;
+}
+.load-error-screen .les-card {
+  max-width: 520px; padding: 28px 30px;
+  background: var(--card-bg, #14224A); border: 1px solid var(--card-border, #24406F);
+  border-radius: 14px; box-shadow: 0 18px 50px rgba(0, 0, 0, .5);
+}
+.load-error-screen .les-title {
+  font-size: 19px; font-weight: 700; color: var(--danger, #FF6B6B); margin-bottom: 12px;
+}
+.load-error-screen .les-desc {
+  font-size: 14px; color: var(--text, #E8F1FF); line-height: 1.7; word-break: break-all; margin-bottom: 10px;
+}
+.load-error-screen .les-hint {
+  font-size: 12.5px; color: var(--muted, #8FA6C8); line-height: 1.7; margin-bottom: 20px;
+}
+.load-error-screen .les-btn {
+  padding: 9px 20px; border: none; border-radius: 8px; cursor: pointer;
+  font-size: 14px; font-weight: 600; color: #061428;
+  background: linear-gradient(135deg, var(--accent, #4DD8FF), var(--accent2, #2E7DFF));
+}
+
+/* ========== 数据存储与备份分区 ========== */
+.store-status {
+  border: 1px solid var(--card-border, #24406F);
+  border-left-width: 4px;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, .02);
+}
+.store-status.is-ok   { border-left-color: var(--accent, #4DD8FF); }
+.store-status.is-bad  { border-left-color: var(--danger, #FF6B6B); background: rgba(255, 107, 107, .07); }
+.store-status .store-line { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 10px; }
+.store-status .store-dot  { width: 9px; height: 9px; border-radius: 50%; background: var(--accent, #4DD8FF); flex: none; }
+.store-status.is-bad .store-dot { background: var(--danger, #FF6B6B); }
+.store-table { margin: 0; }
+.store-table td:first-child { width: 110px; color: var(--muted, #8FA6C8); }
+.store-table code { font-size: 12px; word-break: break-all; }
+
+.cfg-subhead {
+  font-size: 13.5px; font-weight: 700; color: var(--text, #E8F1FF);
+  margin: 18px 0 8px;
+}
+.cfg-warn { color: var(--danger, #FF6B6B) !important; }
+.cfg-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
+/* ========== 通用隐藏类（必须放在最后，权重最高） ==========
+ * 面板切换（#panel-data / #panel-config / #panel-security）与各种弹窗都靠 .hidden，
+ * 之前只给 .admin-empty/.toast 单独写了 .hidden，导致点页签时旧面板没被隐藏、
+ * 三个面板叠在一起显示 —— 这里补一条通用规则兜底。
+ */
+.hidden { display: none !important; }

@@ -90,6 +90,26 @@ code -c $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","pas
 t "还原配置 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/config-backup.json $BASE/api/config)" "200"
 t "配置已还原" "$(cur -b $J $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"]["pageTitle"])')" "海底捞集团工会工作数据看板"
 
+echo "【10】存储诊断 / 备份恢复 / 防误清空"
+t "health 含 persistent 标记" "$(cur $BASE/api/health | grep -o '"persistent":true' | head -1)" '"persistent":true'
+t "health 含 storageMode" "$(cur $BASE/api/health | grep -c '"storageMode"')" "1"
+t "未登录读 /api/storage 应 401" "$(code $BASE/api/storage)" "401"
+t "看板会话读 /api/storage 应 401" "$(code -b $J $BASE/api/storage)" "401"
+t "后台可读 /api/storage" "$(code -b $JA $BASE/api/storage)" "200"
+t "storage 报告数据目录来源=env" "$(cur -b $JA $BASE/api/storage | grep -c '"dataDirSource":"env"')" "1"
+t "storage 报告行数 > 0" "$(cur -b $JA $BASE/api/storage | python3 -c 'import json,sys;print("yes" if json.load(sys.stdin)["rows"]>0 else "no")')" "yes"
+t "PUT 空数据 → 400" "$(code -b $JA -X PUT -H 'Content-Type: application/json' -d '{}' $BASE/api/data)" "400"
+t "PUT 仅 _meta → 400" "$(code -b $JA -X PUT -H 'Content-Type: application/json' -d '{"_meta":{}}' $BASE/api/data)" "400"
+t "看板会话不能手动备份(401)" "$(code -b $J -X POST -H 'Content-Type: application/json' -d '{"kind":"data"}' $BASE/api/backups)" "401"
+t "手动备份 200" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"kind":"data"}' $BASE/api/backups)" "200"
+t "备份列表 200" "$(code -b $JA $BASE/api/backups)" "200"
+t "备份列表非空" "$(cur -b $JA $BASE/api/backups | python3 -c 'import json,sys;print("yes" if json.load(sys.stdin)["count"]>=1 else "no")')" "yes"
+t "非法备份名 → 400" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"name":"../etc/passwd"}' $BASE/api/backups/restore)" "400"
+t "不存在的备份 → 404" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"name":"server-data.19700101-000000.json"}' $BASE/api/backups/restore)" "404"
+BK=$(cur -b $JA $BASE/api/backups | python3 -c 'import json,sys;print(json.load(sys.stdin)["backups"][0]["name"])')
+t "恢复第一份备份 200" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d "{\"name\":\"$BK\"}" $BASE/api/backups/restore)" "200"
+t "恢复后数据仍可读" "$(code -b $JA $BASE/api/data)" "200"
+
 echo
 echo "==============================="
 echo " 通过 $PASS 项 / 失败 $FAIL 项"

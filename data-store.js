@@ -125,8 +125,16 @@
 
   let _sse = null;               // EventSource 实例
   let _sseReconnectTimer = null;
+  let _loadError = null;         // API 模式下数据读取失败的原因（绝不静默降级）
+  let _degraded = false;         // 探不到后端、只能显示本地/示例数据
 
   function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  /** 只保留真正的数据表（排除 _meta 这类元信息） */
+  function sheetKeys(data) {
+    return data ? Object.keys(data).filter(k => k !== '_meta') : [];
+  }
 
   // -------------------------------------------------------------------------
   // 行数据迁移 / 字段访问工具
@@ -345,15 +353,17 @@
   // -------------------------------------------------------------------------
 
   async function probeApi() {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
-      const resp = await fetch('/api/health', { signal: ctrl.signal, cache: 'no-store' });
-      clearTimeout(t);
-      return resp.ok;
-    } catch (_) {
-      return false;
+    for (let i = 0; i < 2; i++) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+        const resp = await fetch('/api/health', { signal: ctrl.signal, cache: 'no-store' });
+        clearTimeout(t);
+        if (resp.ok) return true;
+      } catch (_) { /* 再试一次 */ }
+      if (i === 0) await sleep(600);
     }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -371,26 +381,40 @@
     console.log(`[DashboardStore] 模式: ${_mode}`);
 
     if (_mode === 'api') {
-      try {
-        _data = await apiGet();
-        _data = normalizeData(_data);
-      } catch (e) {
-        if (e.name === 'AuthError') {
-          // 会话失效：交给页面显示登录层，不要再回退本地模式
-          _ready = true;
-          _readyCallbacks.forEach(cb => cb(null));
-          _emit({ authRequired: true });
-          return null;
+      // ⚠️ 关键：探测到后端就是 API 模式，此时绝不允许「静默降级成本地示例数据」——
+      //    否则用户会看到种子数据，误以为「数据被清空了」。
+      let lastErr = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          _data = normalizeData(await apiGet());
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (e.name === 'AuthError') {
+            _ready = true;
+            _readyCallbacks.forEach(cb => cb(null));
+            _emit({ authRequired: true });
+            return null;
+          }
+          if (i < 2) await sleep(400 * (i + 1));
         }
-        console.error('[DashboardStore] API 拉取失败，回退本地', e);
-        _mode = 'local';
-        _data = await loadLocal();
-        _data = normalizeData(_data);
       }
-      if (_mode === 'api') startSSE();
+      if (lastErr) {
+        _loadError = lastErr.message || String(lastErr);
+        console.error('[DashboardStore] 数据读取失败（不会降级为示例数据）:', lastErr);
+        _ready = true;
+        _readyCallbacks.forEach(cb => cb(null));
+        _emit({ loadFailed: true, error: _loadError });
+        return null;
+      }
+      startSSE();
     } else {
-      _data = await loadLocal();
-      _data = normalizeData(_data);
+      _data = normalizeData(await loadLocal());
+      // 浏览器直开本地文件（file://）属正常离线用法；
+      // 若是 http(s) 页面却探不到后端，则要显著提示，避免把示例数据当真数据看
+      _degraded = location.protocol !== 'file:';
+      if (_degraded) console.warn('[DashboardStore] 未连接到服务器，当前显示的是本地/示例数据');
     }
 
     try { await loadConfig(); } catch (_) {}
@@ -433,6 +457,10 @@
   }
 
   async function _persist() {
+    // 兜底：宁可报错，也不要用一份空数据覆盖服务端
+    if (!_data || !sheetKeys(_data).length) {
+      throw new Error('本地数据为空，已阻止写入（防止把服务端数据清空）');
+    }
     if (_mode === 'api') {
       try {
         await apiPut(_data);
@@ -778,14 +806,62 @@
   }
 
   function getMode() { return _mode; }
+  function getLoadError() { return _loadError; }
+  function isDegraded() { return _degraded; }
   function getStatus() {
     return {
       mode: _mode,
       connected: _mode === 'local' ? true : _connected,
       lastSync: _lastSync,
       ready: _ready,
+      degraded: _degraded,
+      loadError: _loadError,
     };
   }
+
+  // -------------------------------------------------------------------------
+  // 存储诊断 / 备份恢复（后台「安全设置」用）
+  // -------------------------------------------------------------------------
+
+  async function getStorageInfo() {
+    if (_mode !== 'api') {
+      return { persistent: true, dataDir: '(浏览器本地存储)', mode: 'local', rows: 0, sheets: sheetKeys(_data).length, backupCount: 0, hints: ['当前是离线/本地模式，数据存在浏览器里。'] };
+    }
+    return httpJson('/api/storage', { cache: 'no-store' });
+  }
+
+  async function listBackups() {
+    if (_mode !== 'api') return { count: 0, backups: [], dir: '' };
+    return httpJson('/api/backups', { cache: 'no-store' });
+  }
+
+  async function createBackup(kind) {
+    return httpJson('/api/backups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind || 'data' }),
+    });
+  }
+
+  /** 用某份快照覆盖回去（改配置的快照会顺带刷新配置） */
+  async function restoreBackup(name) {
+    const r = await httpJson('/api/backups/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (String(name).startsWith('server-config.')) {
+      await loadConfig();
+      _emit({ configOnly: true, source: 'local' });
+    } else {
+      _data = normalizeData(await apiGet());
+      _endSync();
+      _emit({ source: 'local' });
+    }
+    return r;
+  }
+
+  function _endSync() { _lastSync = new Date().toISOString(); }
 
   function _emit(info) {
     // info.statusOnly=true 表示只是连接状态变化，UI 可只刷新徽章，无需重绘数据
@@ -828,6 +904,12 @@
 
     // 看板配置
     getConfig, saveConfig, resetConfig, subscribeConfig,
+
+    // 存储诊断 / 备份恢复
+    getStorageInfo, listBackups, createBackup, restoreBackup,
+
+    // 状态
+    getLoadError, isDegraded,
 
     // 登录 / 会话
     authStatus, authLogin, authLogout, authChangePassword, getAuthState,

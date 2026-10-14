@@ -269,9 +269,12 @@ class CDP {
 
   const cfgCounts = await cdp.evalJs(`(function(){
     const secs=[...document.querySelectorAll('#panel-config .cfg-section .cfg-head')];
+    // 真实可见性判定（offsetParent === null 即不可见），避免"只检查 class 名"漏掉样式缺失
+    const vis = el => !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none';
     return {
-      panelVisible: !document.getElementById('panel-config').classList.contains('hidden'),
-      dataHidden: document.getElementById('panel-data').classList.contains('hidden'),
+      panelVisible: vis(document.getElementById('panel-config')),
+      dataHidden: !vis(document.getElementById('panel-data')),
+      secHidden: !vis(document.getElementById('panel-security')),
       sectionCount: secs.length,
       sectionTitles: secs.map(e=>e.textContent.trim().slice(0,14)),
       metricRows: document.querySelectorAll('#panel-config [data-act="metric-edit"]').length,
@@ -290,8 +293,9 @@ class CDP {
     };
   })()`);
   console.log('    配置面板统计:', JSON.stringify(cfgCounts, null, 1));
-  t('看板配置面板已显示', cfgCounts.panelVisible, true);
-  t('数据管理面板已隐藏', cfgCounts.dataHidden, true);
+  t('看板配置面板真实可见', cfgCounts.panelVisible, true);
+  t('数据管理面板被隐藏', cfgCounts.dataHidden, true);
+  t('安全面板同时被隐藏', cfgCounts.secHidden, true);
   t('配置面板 8 个分区', cfgCounts.sectionCount, 8);
   t('分区标题 = ①~⑧', cfgCounts.sectionTitles.map(s => s.slice(0, 1)),
     ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧']);
@@ -314,20 +318,67 @@ class CDP {
   await clickTab('__security', 'document.querySelectorAll("#panel-security .cfg-head").length>=2', '安全设置面板');
   const secInfo = await cdp.evalJs(`(function(){
     const heads=[...document.querySelectorAll('#panel-security .cfg-head')].map(e=>e.textContent.trim());
+    // 真实可见性判定：offsetParent 为 null 即被隐藏（不只看 class，之前就是这里漏掉了 .hidden 无样式的问题）
+    const vis = el => !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none';
     return {
-      visible: !document.getElementById('panel-security').classList.contains('hidden'),
+      visible: vis(document.getElementById('panel-security')),
+      dataHidden: !vis(document.getElementById('panel-data')),
+      cfgHidden: !vis(document.getElementById('panel-config')),
       heads,
       pwInputs: document.querySelectorAll('#panel-security input[type="password"]').length,
       submitBtns: document.querySelectorAll('#panel-security button').length,
       bodyLen: document.getElementById('panel-security').innerHTML.length,
     };
   })()`);
-  console.log('    安全面板:', JSON.stringify(secInfo, null, 1));
-  t('安全设置面板已显示', secInfo.visible, true);
+  console.log('    安全面板:', JSON.stringify({
+    visible: secInfo.visible, dataHidden: secInfo.dataHidden, cfgHidden: secInfo.cfgHidden,
+    heads: secInfo.heads, pwInputs: secInfo.pwInputs,
+  }));
+  t('安全设置面板真实可见', secInfo.visible, true);
+  t('切到安全设置后数据面板被隐藏', secInfo.dataHidden, true);
+  t('切到安全设置后配置面板被隐藏', secInfo.cfgHidden, true);
   t('含「当前登录状态」', secInfo.heads.some(s => /登录状态/.test(s)), true);
   t('含「修改看板密码」', secInfo.heads.some(s => /看板.*密码/.test(s)), true);
   t('含「修改后台密码」', secInfo.heads.some(s => /后台.*密码/.test(s)), true);
   t('密码输入框 ≥ 4 个', secInfo.pwInputs >= 4, true);
+
+  // 「数据存储与备份」分区：存储是否持久 + 快照列表 + 操作按钮
+  console.log('    数据存储分区:');
+  const storeInfo = await cdp.evalJs(`(function(){
+    const box = document.querySelector('#sec-storage-body');
+    if (!box) return null;
+    return {
+      hasSection: true,
+      persistentClass: (box.querySelector('.store-status')||{}).className || '',
+      text: box.textContent.replace(/\\s+/g,' ').trim().slice(0, 240),
+      tableRows: box.querySelectorAll('.store-table tr').length,
+      backupRows: box.querySelectorAll('table tbody tr').length,
+      restoreBtns: box.querySelectorAll('[data-restore]').length,
+      hasBackupNow: !!document.getElementById('store-backup-now'),
+      hasRefresh: !!document.getElementById('store-refresh'),
+    };
+  })()`);
+  console.log('   ', JSON.stringify(storeInfo && {
+    cls: storeInfo.persistentClass, rows: storeInfo.tableRows,
+    backups: storeInfo.backupRows, restoreBtns: storeInfo.restoreBtns,
+  }));
+  t('存在「数据存储与备份」分区', !!(storeInfo && storeInfo.hasSection), true);
+  t('显示持久化状态', /持久化/.test(storeInfo.text), true);
+  t('本地测试目录被判定为持久目录', /is-ok/.test(storeInfo.persistentClass), true);
+  t('展示数据目录/文件等 5 项信息', storeInfo.tableRows, 5);
+  t('有快照列表或提示', storeInfo.backupRows + storeInfo.restoreBtns >= 1, true);
+  t('有「立即备份」按钮', storeInfo.hasBackupNow, true);
+  t('有「刷新状态」按钮', storeInfo.hasRefresh, true);
+
+  // 点一次「立即备份数据」，确认与后端联通
+  const bkRes = await cdp.evalJs(`(async()=>{
+    const before = (await (await fetch('/api/backups',{credentials:'include'})).json()).count;
+    document.getElementById('store-backup-now').click();
+    await new Promise(r=>setTimeout(r,900));
+    const after = (await (await fetch('/api/backups',{credentials:'include'})).json()).count;
+    return [before, after];
+  })()`);
+  t('点「立即备份」→ 快照数 +1', bkRes[1] > bkRes[0], true);
 
   // 真实提交一次「改密码 → 改回」，验证面板与后端联通
   console.log('    实测：通过安全面板把看板密码改为 e2etmp9 再改回');

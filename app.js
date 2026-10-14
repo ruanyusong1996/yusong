@@ -614,9 +614,50 @@ function flashHint(text) {
   }, 2400);
 }
 
-function showSessionMask() {
+/** 通用遮罩：标题/说明/按钮文案/点击行为 */
+function showMask(opts) {
   const el = document.getElementById('session-mask');
-  if (el) el.classList.remove('hidden');
+  if (!el) return;
+  const title = el.querySelector('.sm-title');
+  const desc = el.querySelector('.sm-desc');
+  const btn = document.getElementById('session-relogin');
+  if (title) title.textContent = opts.title;
+  if (desc) desc.textContent = opts.desc;
+  if (btn) {
+    btn.textContent = opts.btn;
+    btn.onclick = opts.onClick;
+  }
+  el.classList.remove('hidden');
+}
+
+/** 会话过期 / 未登录 */
+function showSessionMask() {
+  showMask({
+    title: '登录已过期',
+    desc: '为保护数据安全，请重新登录后继续查看。',
+    btn: '重新登录',
+    onClick: () => location.replace('/login.html?role=dashboard'),
+  });
+}
+
+/** 数据读取失败：明确报错，绝不拿示例数据冒充真实数据 */
+function showLoadErrorMask(msg) {
+  showMask({
+    title: '数据读取失败',
+    desc: `${msg}（当前未展示任何数据，以免把示例数据误当成真实数据）`,
+    btn: '刷新重试',
+    onClick: () => location.reload(),
+  });
+}
+
+/** 探不到后端时的显著横幅（说明当前看到的是本地/示例数据） */
+function showDegradedBanner() {
+  if (document.getElementById('degraded-banner')) return;
+  const d = document.createElement('div');
+  d.id = 'degraded-banner';
+  d.className = 'degraded-banner';
+  d.textContent = '⚠️ 未连接到服务器：当前页面显示的是本地/示例数据，请刷新页面或联系管理员';
+  document.body.prepend(d);
 }
 
 // ---------------------------------------------------------------------------
@@ -646,8 +687,10 @@ async function boot() {
   const data = await DashboardStore.load();
 
   if (!data) {
-    // 会话失效
-    showSessionMask();
+    // 会话失效 → 去登录；数据读取失败 → 明确报错，都不再展示示例数据
+    const err = DashboardStore.getLoadError && DashboardStore.getLoadError();
+    if (err) showLoadErrorMask(err);
+    else showSessionMask();
     return;
   }
   DATA = DashboardStore.getData();
@@ -657,10 +700,12 @@ async function boot() {
   renderValues();
   refreshSyncBadge();
   bindEvents();
+  if (DashboardStore.isDegraded && DashboardStore.isDegraded()) showDegradedBanner();
 
   DashboardStore.subscribe((d, info) => {
     refreshSyncBadge();
     if (info && info.authRequired) { showSessionMask(); return; }
+    if (info && info.loadFailed) { showLoadErrorMask(info.error || '数据读取失败'); return; }
     if (info && info.statusOnly) return;
     if (info && info.configOnly) {
       CFG = DashboardStore.getConfig() || CFG;
