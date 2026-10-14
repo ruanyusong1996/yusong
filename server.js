@@ -63,11 +63,48 @@ function isDirWritable(dir) {
   }
 }
 
+/**
+ * 扫描容器里「真实的挂载点」（Linux 读 /proc/mounts）：
+ * 目的 —— 万一持久卷没挂在 /data 而是挂在别的路径，也能自动找到它。
+ * 只认非虚拟文件系统的挂载（ext4/xfs/btrfs…），排除容器根文件系统（overlay）、
+ * tmpfs、以及各种系统目录。
+ */
+function detectMountDirs() {
+  const found = [];
+  if (process.platform !== 'linux') return found;
+  const SKIP_FS = new Set([
+    'proc', 'sysfs', 'tmpfs', 'devtmpfs', 'devpts', 'cgroup', 'cgroup2', 'mqueue', 'shm',
+    'overlay', 'squashfs', 'nsfs', 'tracefs', 'debugfs', 'securityfs', 'pstore', 'bpf',
+    'autofs', 'configfs', 'fusectl', 'ramfs', 'hugetlbfs', 'efivarfs', 'selinuxfs',
+    'binfmt_misc', 'rpc_pipefs', 'fuse.lxcfs', 'fuse.gvfsd-fuse', '9p', 'nfs', 'nfs4', 'cifs',
+  ]);
+  const SKIP_PATH = /^\/(proc|sys|dev|etc|run|usr|bin|sbin|lib|lib64|boot|tmp)(\/|$)|^\/var\/(lib|run|cache|log|spool|tmp)(\/|$)/;
+  try {
+    const raw = fs.readFileSync('/proc/mounts', 'utf-8');
+    for (const line of raw.split('\n')) {
+      const parts = line.split(' ');
+      if (parts.length < 3) continue;
+      const mp = parts[1].replace(/\\040/g, ' ');
+      const fsType = parts[2];
+      if (SKIP_FS.has(fsType)) continue;
+      if (mp === '/' || SKIP_PATH.test(mp)) continue;
+      if (mp === ROOT_REAL || mp.startsWith(ROOT_REAL + path.sep)) continue;
+      if (mp.split('/').filter(Boolean).length > 3) continue;   // 太深的挂载点多半不是数据卷
+      if (!isDirWritable(mp)) continue;
+      found.push(mp);
+    }
+  } catch (_) {
+    /* 非 Linux 或读取失败：忽略 */
+  }
+  return found;
+}
+
 /** 候选目录（按优先级）；最后一项是兜底，必然可用 */
 const DATA_DIR_CANDIDATES = (() => {
   const list = [];
   if (process.env.DATA_DIR) list.push({ dir: path.resolve(process.env.DATA_DIR), src: 'env' });
   list.push({ dir: '/data', src: 'volume' });                       // Railway Volume 默认挂载点
+  detectMountDirs().forEach(d => list.push({ dir: d, src: 'mount' })); // 挂在别处的卷
   list.push({ dir: path.join(ROOT_REAL, 'data'), src: 'app-data' });
   list.push({ dir: ROOT_REAL, src: 'app-root' });                    // 兜底：本地开发
   const seen = new Set();
@@ -495,6 +532,8 @@ app.get('/api/storage', requireAdmin, (_req, res) => {
     persistent: STORAGE_PERSISTENT,
     dataDir: DATA_DIR,
     dataDirSource: DATA_DIR_SOURCE,
+    candidates: DATA_DIR_CANDIDATES.map(c => `${c.dir} (${c.src})`),
+    detectedMounts: detectMountDirs(),
     dataFile: DATA_FILE,
     dataExists: fs.existsSync(DATA_FILE),
     dataSize,
@@ -737,6 +776,11 @@ const server = app.listen(PORT, () => {
   console.log(`  健康检查:   http://localhost:${PORT}/api/health`);
   console.log(`  ── 数据存储 ─────────────────────────────`);
   console.log(`  数据目录:   ${DATA_DIR}   (来源: ${DATA_DIR_SOURCE})`);
+  if (!STORAGE_PERSISTENT) {
+    console.log(`  候选目录:   ${DATA_DIR_CANDIDATES.map(c => c.dir + '(' + c.src + ')').join('  ')}`);
+    const mounts = detectMountDirs();
+    console.log(`  真实挂载点: ${mounts.length ? mounts.join('  ') : '（无）'}`);
+  }
   console.log(`  数据文件:   ${DATA_FILE}   行数 ${bootRows}  (${dataState})`);
   console.log(`  配置文件:   ${CONFIG_FILE}  (${configState})`);
   console.log(`  密码文件:   ${AUTH_FILE}`);
