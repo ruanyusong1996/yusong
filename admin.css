@@ -491,3 +491,127 @@
   .btn { padding: 6px 12px; font-size: 12px; }
   .admin-table { font-size: 12px; }
 }
+
+/* ==================== 看板配置面板 ==================== */
+.cfg-topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: rgba(20, 34, 74, 0.85);
+  border: 1px solid rgba(77, 216, 255, 0.25);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  position: sticky; top: 0; z-index: 20;
+  backdrop-filter: blur(6px);
+}
+.cfg-topbar-tip { font-size: 12.5px; color: #9FB4DA; line-height: 1.6; }
+.cfg-topbar-tip b { color: #4DD8FF; }
+.cfg-topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.cfg-section {
+  background: rgba(20, 34, 74, 0.55);
+  border: 1px solid rgba(77, 216, 255, 0.18);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.cfg-head {
+  background: linear-gradient(90deg, #1E3A70 0%, rgba(30, 58, 112, 0.5) 100%);
+  border-left: 4px solid #4DD8FF;
+  padding: 10px 16px;
+  font-size: 14px; font-weight: 600; color: #fff; letter-spacing: 1px;
+}
+.cfg-body { padding: 14px 16px 16px; }
+.cfg-sub-title { font-size: 12.5px; color: #5FE0FF; margin: 14px 0 8px; font-weight: 600; }
+.cfg-hint { font-size: 12px; color: #7E93BD; line-height: 1.7; margin: 0 0 12px; }
+.cfg-hint code { background: rgba(77,216,255,0.12); color: #4DD8FF; padding: 1px 5px; border-radius: 3px; }
+.cfg-hint b { color: #9FB4DA; }
+.cfg-empty { color: #7E93BD; font-size: 12.5px; padding: 8px 0; }
+
+/* 表单网格 */
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.form-field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: #9FB4DA; }
+.form-field.full { grid-column: 1 / -1; }
+.form-field input[type="text"], .form-field input[type="password"], .form-field input[type="number"],
+.form-field select, .form-field textarea {
+  background: rgba(8, 16, 37, 0.75);
+  border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #E6EEFF; border-radius: 4px; padding: 7px 10px; font-size: 13px;
+  font-family: inherit; outline: none; width: 100%;
+}
+.form-field textarea { resize: vertical; line-height: 1.5; }
+.form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: #4DD8FF; }
+.form-field.check { flex-direction: row; align-items: center; gap: 8px; }
+.form-field.check input { width: auto; }
+.color-input { display: flex; gap: 8px; align-items: center; }
+.color-input input[type="color"] { width: 42px; height: 32px; padding: 0; border: 1px solid rgba(77,216,255,0.3); background: transparent; border-radius: 4px; cursor: pointer; }
+.color-input input[type="text"] { flex: 1; }
+
+/* 列表型配置（副标题条目等） */
+.cfg-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.cfg-list-row {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(20, 34, 74, 0.6);
+  border: 1px solid rgba(77, 216, 255, 0.2);
+  border-radius: 4px; padding: 8px 10px;
+}
+.cfg-drag { color: #4c5d83; cursor: default; }
+.cfg-grow { flex: 1; min-width: 120px; }
+.cfg-list-row input[type="text"], .cfg-blk-row input[type="text"], .cfg-mod-head input[type="text"],
+.cfg-mini-select, .where-row input, .where-row select, .cfg-col-head select, .pick-list input[type="text"] {
+  background: rgba(8, 16, 37, 0.75);
+  border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #E6EEFF; border-radius: 4px; padding: 6px 9px; font-size: 12.5px; font-family: inherit; outline: none;
+}
+.cfg-mini-select { max-width: 200px; }
+.mini-btn {
+  background: rgba(77, 216, 255, 0.1);
+  border: 1px solid rgba(77, 216, 255, 0.35);
+  color: #4DD8FF; border-radius: 4px; padding: 5px 10px;
+  font-size: 12px; cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.mini-btn:hover { background: rgba(77, 216, 255, 0.2); }
+.mini-btn.danger { border-color: rgba(239, 68, 68, 0.45); color: #EF4444; }
+.mini-btn.danger:hover { background: rgba(239, 68, 68, 0.15); }
+.mini-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #9FB4DA; white-space: nowrap; }
+
+/* 模块卡片 */
+.cfg-mod-card {
+  border: 1px solid rgba(77, 216, 255, 0.25);
+  border-radius: 6px; margin-bottom: 14px; background: rgba(8, 16, 37, 0.45);
+}
+.cfg-mod-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border-bottom: 1px dashed rgba(77, 216, 255, 0.2);
+}
+.cfg-mod-head input[type="text"] { flex: 1; min-width: 160px; }
+.cfg-mod-actions { padding: 8px 12px; }
+.cfg-col-wrap { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.cfg-col-card { border: 1px solid rgba(77, 216, 255, 0.18); border-radius: 5px; background: rgba(20, 34, 74, 0.5); }
+.cfg-col-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px dashed rgba(77, 216, 255, 0.15); font-size: 12.5px; color: #9FB4DA; }
+.cfg-blk-list { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.cfg-blk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(8, 16, 37, 0.5); border: 1px solid rgba(77, 216, 255, 0.12); border-radius: 4px; padding: 7px 9px; }
+.cfg-blk-row input[type="text"] { flex: 1; min-width: 120px; }
+.cfg-type-tag { font-size: 11px; color: #5FE0FF; border: 1px solid rgba(77, 216, 255, 0.35); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+.cfg-hint-inline { font-size: 11px; color: #7E93BD; }
+.cfg-col-actions { padding: 8px 12px 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* 配置内的表格 */
+.cfg-table-wrap { overflow-x: auto; margin-bottom: 10px; }
+.cfg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.cfg-table th { background: #1E3A70; color: #fff; padding: 8px 10px; text-align: left; border: 1px solid rgba(77,216,255,0.15); white-space: nowrap; }
+.cfg-table td { padding: 7px 10px; border: 1px solid rgba(77,216,255,0.1); color: #E6EEFF; vertical-align: middle; }
+.cfg-table tbody tr:nth-child(odd) td { background: rgba(24, 42, 88, 0.55); }
+.cfg-table .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #5FE0FF; }
+.cfg-table .small { font-size: 11.5px; color: #7E93BD; }
+.cfg-op-cell { white-space: nowrap; display: flex; gap: 5px; }
+
+/* 弹窗内表单 */
+.pick-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.where-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.where-row select, .where-row input[type="text"] { flex: 1; min-width: 90px; }
+.cfg-json {
+  width: 100%; background: rgba(8, 16, 37, 0.8); border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #B9D6FF; border-radius: 4px; padding: 10px; font-size: 12px; line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; margin-bottom: 10px;
+}
+#panel-config { padding-bottom: 40px; }

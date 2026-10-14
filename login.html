@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登录 · 工会数据看板</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: radial-gradient(1200px 600px at 50% -10%, #16305e 0%, #0b1730 45%, #081025 100%);
+      color: #E6EEFF;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100%;
+    }
+    .login-wrap { width: 100%; max-width: 400px; padding: 24px; }
+    .login-card {
+      background: rgba(20, 34, 74, 0.85);
+      border: 1px solid rgba(77, 216, 255, 0.25);
+      border-radius: 10px;
+      padding: 32px 28px 26px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255,255,255,0.04);
+      backdrop-filter: blur(6px);
+    }
+    .login-logo { font-size: 34px; text-align: center; line-height: 1; margin-bottom: 10px; }
+    .login-title { font-size: 19px; font-weight: 700; text-align: center; margin: 0 0 6px; letter-spacing: 0.5px; }
+    .login-sub { font-size: 12.5px; color: #7E93BD; text-align: center; margin: 0 0 22px; line-height: 1.6; }
+    .role-tag {
+      display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px;
+      border: 1px solid rgba(77, 216, 255, 0.45); color: #4DD8FF; background: rgba(77, 216, 255, 0.1);
+    }
+    label { display: block; font-size: 12.5px; color: #9FB4DA; margin: 0 0 6px; }
+    input[type="password"], input[type="text"] {
+      width: 100%; height: 42px; padding: 0 13px; font-size: 14px;
+      background: rgba(8, 16, 37, 0.8); color: #E6EEFF;
+      border: 1px solid rgba(77, 216, 255, 0.25); border-radius: 6px; outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus { border-color: #4DD8FF; box-shadow: 0 0 0 3px rgba(77, 216, 255, 0.12); }
+    .pw-row { display: flex; gap: 8px; }
+    .pw-row input { flex: 1; }
+    .eye {
+      width: 42px; flex: 0 0 42px; background: rgba(77,216,255,0.08); color: #7E93BD;
+      border: 1px solid rgba(77, 216, 255, 0.25); border-radius: 6px; cursor: pointer; font-size: 15px;
+    }
+    .eye:hover { color: #4DD8FF; }
+    .btn-login {
+      width: 100%; height: 44px; margin-top: 18px; font-size: 15px; font-weight: 700; letter-spacing: 1px;
+      color: #04121F; cursor: pointer; border: none; border-radius: 6px;
+      background: linear-gradient(135deg, #5FE0FF 0%, #4DD8FF 45%, #3B82F6 100%);
+      box-shadow: 0 6px 18px rgba(77, 216, 255, 0.28);
+    }
+    .btn-login:hover { filter: brightness(1.06); }
+    .btn-login:disabled { opacity: .6; cursor: not-allowed; }
+    .err { margin-top: 14px; font-size: 13px; color: #FF8A8A; min-height: 18px; text-align: center; }
+    .back { display: block; text-align: center; margin-top: 18px; font-size: 12.5px; color: #7E93BD; text-decoration: none; }
+    .back:hover { color: #4DD8FF; }
+    .switch { text-align: center; margin-top: 14px; font-size: 12.5px; color: #7E93BD; }
+    .switch a { color: #4DD8FF; text-decoration: none; }
+    .offline-note {
+      margin-top: 16px; padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.6;
+      background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); color: #F5C97A;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-logo">🔒</div>
+      <h1 class="login-title" id="login-title">工会数据看板</h1>
+      <p class="login-sub" id="login-sub">请输入<span class="role-tag" id="role-tag">看板</span>密码</p>
+
+      <label for="password">密码</label>
+      <div class="pw-row">
+        <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" autofocus />
+        <button class="eye" id="toggle-eye" title="显示 / 隐藏密码" type="button">👁</button>
+      </div>
+
+      <button class="btn-login" id="btn-login">登 录</button>
+      <div class="err" id="err"></div>
+
+      <div class="switch" id="switch-role"></div>
+      <a class="back" id="back-link" href="/">« 返回</a>
+
+      <div class="offline-note hidden" id="offline-note">
+        提示：当前是「本地单机模式」（直接双击 HTML 打开，无后端服务），密码校验依赖后端服务，故此模式下不启用密码保护。
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const qs = new URLSearchParams(location.search);
+      let role = qs.get('role') === 'admin' ? 'admin' : 'dashboard';
+      const next = qs.get('next') || (role === 'admin' ? '/admin.html' : '/');
+      const $ = id => document.getElementById(id);
+
+      function paint() {
+        const isAdmin = role === 'admin';
+        document.title = (isAdmin ? '后台登录' : '看板登录') + ' · 工会数据看板';
+        $('login-title').textContent = isAdmin ? '后台管理中心' : '工会数据看板';
+        $('role-tag').textContent = isAdmin ? '后台管理' : '看板访问';
+        $('login-sub').innerHTML = '请输入<span class="role-tag">' + (isAdmin ? '后台管理' : '看板') + '</span>密码';
+        $('switch-role').innerHTML = isAdmin
+          ? '我要看数据看板 → <a href="/login.html?role=dashboard">看板登录</a>'
+          : '我是管理员 → <a href="/login.html?role=admin&next=/admin.html">后台登录</a>';
+        $('back-link').href = isAdmin ? '/login.html?role=dashboard' : '/';
+        $('back-link').textContent = isAdmin ? '« 去看板登录' : '« 返回看板';
+        $('password').value = '';
+        $('err').textContent = '';
+      }
+      paint();
+
+      $('toggle-eye').addEventListener('click', () => {
+        const el = $('password');
+        el.type = el.type === 'password' ? 'text' : 'password';
+        el.focus();
+      });
+
+      async function submit() {
+        const pw = $('password').value;
+        if (!pw) { $('err').textContent = '请输入密码'; return; }
+        $('btn-login').disabled = true;
+        $('err').textContent = '登录中…';
+        try {
+          const resp = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role, password: pw }),
+          });
+          const body = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(body.error || '登录失败');
+          $('err').textContent = '登录成功，正在进入…';
+          location.replace(next);
+        } catch (e) {
+          $('err').textContent = e.message || '登录失败';
+          $('btn-login').disabled = false;
+          $('password').select();
+        }
+      }
+
+      $('btn-login').addEventListener('click', submit);
+      $('password').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+
+      // 检测是否处于本地单机模式（无后端）
+      fetch('/api/health', { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error(); })
+        .catch(() => {
+          $('offline-note').classList.remove('hidden');
+          $('offline-note').innerHTML = '提示：未检测到后端服务（本地单机模式）。请直接双击打开 <b>index.html</b> / <b>admin.html</b>，此模式下不启用密码保护。';
+        });
+    })();
+  </script>
+</body>
+</html>

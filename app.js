@@ -1,327 +1,518 @@
-/* ===== 数据看板交互脚本 ===== */
+/* ===== 数据看板交互脚本（配置驱动） =====
+ * 看板长什么样 = 后台「看板配置」里的 config：
+ *   文字/标题 · 主题配色 · 模块与栅格布局 · 指标卡片(数据链接+公式) · 图表 · 统计表
+ * 数据变化 / 配置变化 → 自动重绘。
+ */
+'use strict';
 
-// 数据从 DashboardStore 加载
 let DATA = null;
-let charts = {}; // 全局图表实例
+let CFG = null;
+const charts = {};        // blockId -> echarts 实例
+let METRICS = {};         // 指标 id -> 数值
 
-// 主题色
-const COMMON_AXIS = {
-  axisLine: { lineStyle: { color: 'rgba(77,216,255,0.3)' } },
-  axisLabel: { color: '#7E93BD' },
-  splitLine: { lineStyle: { color: 'rgba(77,216,255,0.08)' } },
+const E = window.ConfigEngine;
+
+// ---------------------------------------------------------------------------
+// 工具
+// ---------------------------------------------------------------------------
+const theme = () => (CFG && CFG.theme) || {};
+const palette = () => {
+  const t = theme();
+  return (t.palette && t.palette.length) ? t.palette : ['#4DD8FF', '#5FE0FF', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
 };
-const COMMON_TOOLTIP = {
-  backgroundColor: 'rgba(20, 34, 74, 0.95)',
-  borderColor: 'rgba(77, 216, 255, 0.4)',
-  borderWidth: 1,
-  textStyle: { color: '#E6EEFF' },
-  extraCssText: 'box-shadow: 0 4px 18px rgba(0,0,0,0.4);',
+const colorAt = (i) => {
+  const p = palette();
+  return p[i % p.length];
 };
-
-// 安全地按字段名取值（兼容对象行和数组行）
-const get = (row, headers, name) => DashboardStore.pickValue(row, headers, name);
-
-// 派生指标：从数据动态计算（全部按字段名访问，不再依赖列索引）
-function computeMetrics() {
-  if (!DATA) return null;
-  const org = DATA['01-组织建设'].rows;
-  const visit = DATA['02-走访慰问'].rows;
-  const act = DATA['03-员工活动'].rows;
-  const fund = DATA['04-经费收支'].rows;
-  const orgHeaders = DATA['01-组织建设'].headers;
-  const visitHeaders = DATA['02-走访慰问'].headers;
-  const actHeaders = DATA['03-员工活动'].headers;
-  const fundHeaders = DATA['04-经费收支'].headers;
-
-  // 组织建设
-  const orgTotal = org.length;
-  const orgEstablished = org.filter(r => get(r, orgHeaders, '组建状态') === '已组建').length;
-  const orgPreparing = org.filter(r => get(r, orgHeaders, '组建状态') === '筹建中').length;
-  const orgByLevel = {};
-  org.forEach(r => {
-    const level = get(r, orgHeaders, '工会级别') || '其他';
-    const status = get(r, orgHeaders, '组建状态');
-    orgByLevel[level] = orgByLevel[level] || { 已组建: 0, 筹建中: 0 };
-    if (status === '已组建' || status === '筹建中') orgByLevel[level][status]++;
-  });
-
-  // 走访慰问
-  const visitTypes = {};
-  visit.forEach(r => {
-    const t = get(r, visitHeaders, '慰问类型') || '其他';
-    visitTypes[t] = (visitTypes[t] || 0) + 1;
-  });
-  const visitAreas = {};
-  visit.forEach(r => {
-    const a = get(r, visitHeaders, '所在大区') || '其他';
-    visitAreas[a] = (visitAreas[a] || 0) + 1;
-  });
-  const visitTotal = visit.length;
-  const visitAmount = visit.reduce((s, r) => s + (Number(get(r, visitHeaders, '慰问物品金额（元）')) || 0), 0);
-
-  // 员工活动
-  const actTotal = act.length;
-  const actCoverage = act.reduce((s, r) => s + (Number(get(r, actHeaders, '覆盖人数')) || 0), 0);
-  const actSpend = act.reduce((s, r) => s + (Number(get(r, actHeaders, '支出金额（元）')) || 0), 0);
-  const actForms = {};
-  act.forEach(r => { const f = get(r, actHeaders, '活动形式') || ''; actForms[f] = (actForms[f] || 0) + 1; });
-  const actTypes = {};
-  act.forEach(r => { const t = get(r, actHeaders, '活动类型') || ''; actTypes[t] = (actTypes[t] || 0) + 1; });
-
-  // 经费：优先使用「当前结余（万元）」；如果该列不存在则拿「当前结余（元）」再除 10000
-  const fundInitial = fund.reduce((s, r) => s + (Number(get(r, fundHeaders, '年初金额')) || 0), 0);
-  const fundSpend = fund.reduce((s, r) => s + (Number(get(r, fundHeaders, '支出金额')) || 0), 0);
-  const fundBalance = fund.reduce((s, r) => {
-    const wan = Number(get(r, fundHeaders, '当前结余（万元）'));
-    if (Number.isFinite(wan)) return s + wan;
-    const yuan = Number(get(r, fundHeaders, '当前结余（元）')) || 0;
-    return s + yuan / 10000;
-  }, 0);
-  const fundList = fund.map(r => ({
-    name: get(r, fundHeaders, '工会名称') || get(r, fundHeaders, '工会全称') || '未命名',
-    balance: (() => {
-      const wan = Number(get(r, fundHeaders, '当前结余（万元）'));
-      return Number.isFinite(wan) ? wan : (Number(get(r, fundHeaders, '当前结余（元）')) || 0) / 10000;
-    })(),
-  }));
-
-  return {
-    org: { total: orgTotal, established: orgEstablished, preparing: orgPreparing, byLevel: orgByLevel },
-    visit: { total: visitTotal, amount: visitAmount, types: visitTypes, areas: visitAreas },
-    act: { total: actTotal, coverage: actCoverage, spend: actSpend, forms: actForms, types: actTypes },
-    fund: { initial: fundInitial / 10000, spend: fundSpend / 10000, balance: fundBalance, list: fundList },
-  };
-}
-
-// 数字格式化（保留 2 位小数，去尾 0）
-function fmtNum(n, digits = 2) {
-  if (typeof n !== 'number') return n;
-  return Number(n.toFixed(digits)).toString();
-}
-
-// 更新看板 DOM
-function renderDashboard() {
-  const m = computeMetrics();
-  if (!m) return;
-
-  // 组织建设
-  document.querySelectorAll('[data-metric="org-total"]').forEach(el => el.textContent = m.org.total);
-  document.querySelectorAll('[data-metric="org-established"]').forEach(el => el.textContent = m.org.established);
-  document.querySelectorAll('[data-metric="org-preparing"]').forEach(el => el.textContent = m.org.preparing);
-
-  // 走访
-  document.querySelectorAll('[data-metric="visit-total"]').forEach(el => el.textContent = m.visit.total);
-  document.querySelectorAll('[data-metric="visit-amount"]').forEach(el => el.textContent = fmtNum(m.visit.amount, 0));
-
-  // 活动
-  document.querySelectorAll('[data-metric="act-total"]').forEach(el => el.textContent = m.act.total);
-  document.querySelectorAll('[data-metric="act-coverage"]').forEach(el => el.textContent = m.act.coverage);
-  document.querySelectorAll('[data-metric="act-spend"]').forEach(el => el.textContent = fmtNum(m.act.spend, 0));
-
-  // 经费
-  document.querySelectorAll('[data-metric="fund-initial"]').forEach(el => el.textContent = fmtNum(m.fund.initial, 2));
-  document.querySelectorAll('[data-metric="fund-spend"]').forEach(el => el.textContent = fmtNum(m.fund.spend, 2));
-  document.querySelectorAll('[data-metric="fund-balance"]').forEach(el => el.textContent = fmtNum(m.fund.balance, 2));
-
-  // 渲染图表
-  renderOrgPie(m);
-  renderVisitChart(m);
-  renderActChart(m);
-  renderFundChart(m);
-}
-
-// 组织建设饼图
-function renderOrgPie(m) {
-  const el = document.getElementById('chart-org-pie');
-  if (!el) return;
-  if (!charts.orgPie) charts.orgPie = echarts.init(el);
-  charts.orgPie.setOption({
-    tooltip: { ...COMMON_TOOLTIP, trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, textStyle: { color: '#E6EEFF', fontSize: 12 }, itemWidth: 14, itemHeight: 14 },
-    series: [{
-      type: 'pie',
-      radius: ['38%', '65%'],
-      center: ['50%', '45%'],
-      avoidLabelOverlap: true,
-      itemStyle: { borderColor: '#0E1A35', borderWidth: 2 },
-      label: { color: '#E6EEFF', fontSize: 13 },
-      labelLine: { lineStyle: { color: '#4DD8FF' } },
-      data: [
-        { value: m.org.established, name: '已组建', itemStyle: { color: '#4DD8FF' } },
-        { value: m.org.preparing, name: '筹建中', itemStyle: { color: '#F59E0B' } },
-      ],
-    }],
-  }, true);
-}
-
-// 走访柱状图
-const VISIT_TYPE_SHORT = {
-  '员工直系亲属重大疾病': '直系亲属\n重大疾病',
-  '员工本人重大疾病': '员工本人\n重大疾病',
-};
-function renderVisitChart(m) {
-  const el = document.getElementById('chart-visit-type');
-  if (!el) return;
-  if (!charts.visit) charts.visit = echarts.init(el);
-  const items = Object.entries(m.visit.types);
-  const labelFmt = (v) => {
-    if (VISIT_TYPE_SHORT[v]) return VISIT_TYPE_SHORT[v];
-    if (v.length > 6) return v.slice(0, 6) + '\n' + v.slice(6);
-    return v;
-  };
-  charts.visit.setOption({
-    tooltip: { ...COMMON_TOOLTIP, trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: { left: 50, right: 30, top: 30, bottom: 55 },
-    xAxis: { type: 'category', data: items.map(([k]) => k), ...COMMON_AXIS, axisLabel: { color: '#7E93BD', fontSize: 12, interval: 0, lineHeight: 15, formatter: labelFmt } },
-    yAxis: { type: 'value', ...COMMON_AXIS },
-    series: [{
-      type: 'bar',
-      data: items.map(([, v], i) => ({
-        value: v,
-        itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: ['#4DD8FF', '#5FE0FF', '#A78BFA'][i % 3] }, { offset: 1, color: '#1E40AF' }]) },
-      })),
-      label: { show: true, position: 'top', color: '#4DD8FF', fontWeight: 700, fontSize: 14 },
-      barWidth: 50,
-    }],
-  }, true);
-}
-
-// 活动类型饼图
-function renderActChart(m) {
-  const el = document.getElementById('chart-activity-type');
-  if (!el) return;
-  if (!charts.act) charts.act = echarts.init(el);
-  const colors = ['#4DD8FF', '#5FE0FF', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
-  const items = Object.entries(m.act.types);
-  charts.act.setOption({
-    tooltip: { ...COMMON_TOOLTIP, trigger: 'item', formatter: '{b}: {c} 场 ({d}%)' },
-    legend: { bottom: 0, textStyle: { color: '#E6EEFF', fontSize: 11 }, itemWidth: 12, itemHeight: 12 },
-    series: [{
-      type: 'pie',
-      radius: ['38%', '65%'],
-      center: ['50%', '45%'],
-      avoidLabelOverlap: true,
-      itemStyle: { borderColor: '#0E1A35', borderWidth: 2 },
-      label: { color: '#E6EEFF', fontSize: 12 },
-      data: items.map(([k, v], i) => ({ value: v, name: k, itemStyle: { color: colors[i % colors.length] } })),
-    }],
-  }, true);
-}
-
-// 经费柱状图
-function renderFundChart(m) {
-  const el = document.getElementById('chart-fund-bar');
-  if (!el) return;
-  if (!charts.fund) charts.fund = echarts.init(el);
-  charts.fund.setOption({
-    tooltip: { ...COMMON_TOOLTIP, trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (p) => `${p[0].name}<br/>结余：${p[0].value} 万元` },
-    grid: { left: 40, right: 30, top: 30, bottom: 80 },
-    xAxis: { type: 'category', data: m.fund.list.map(l => l.name), ...COMMON_AXIS, axisLabel: { color: '#7E93BD', fontSize: 11, rotate: 20 } },
-    yAxis: { type: 'value', name: '万元', nameTextStyle: { color: '#7E93BD' }, ...COMMON_AXIS },
-    series: [{
-      type: 'bar',
-      data: m.fund.list.map(l => ({
-        value: l.balance,
-        itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#4DD8FF' }, { offset: 1, color: '#1E40AF' }]) },
-      })),
-      label: { show: true, position: 'top', color: '#4DD8FF', fontWeight: 700, fontSize: 12, formatter: (p) => Number(p.value.toFixed(2)) },
-      barWidth: 36,
-    }],
-  }, true);
-}
-
-// 渲染表格（用于模块二的走访负责人表格 + 模块三的活动形式表格）
-function renderTables() {
-  const m = computeMetrics();
-  if (!m) return;
-
-  // 走访负责人表格
-  const visitTbody = document.querySelector('#visit-areas-tbody');
-  if (visitTbody) {
-    visitTbody.innerHTML = '';
-    Object.entries(m.visit.areas)
-      .sort((a, b) => b[1] - a[1])
-      .forEach(([name, count]) => {
-        const tr = document.createElement('tr');
-        tr.className = 'clickable';
-        tr.dataset.detail = '02-走访慰问';
-        tr.dataset.filter = JSON.stringify({ key: '所在大区', value: name });
-        tr.innerHTML = `
-          <td>${escapeHtml(name)}</td>
-          <td class="cell-value">${count}</td>
-          <td class="cell-value">0</td>`;
-        visitTbody.appendChild(tr);
-      });
-  }
-
-  // 活动形式表格
-  const actFormTbody = document.querySelector('#act-forms-tbody');
-  if (actFormTbody) {
-    actFormTbody.innerHTML = '';
-    Object.entries(m.act.forms).forEach(([name, count]) => {
-      const tr = document.createElement('tr');
-      tr.className = 'clickable';
-      tr.dataset.detail = '03-员工活动';
-      tr.dataset.filter = JSON.stringify({ key: '活动形式', value: name });
-      tr.innerHTML = `
-        <td>${escapeHtml(name)}</td>
-        <td class="cell-value">${count}</td>`;
-      actFormTbody.appendChild(tr);
-    });
-  }
-
-  // 工会级别 × 组建状态表格
-  const orgTbody = document.querySelector('#org-level-tbody');
-  if (orgTbody) {
-    orgTbody.innerHTML = '';
-    // 自动从 orgByLevel 里枚举出全部等级；旧的硬编码三个等级作为兜底
-    const levels = Object.keys(m.org.byLevel);
-    if (!levels.length) {
-      ['一级工会', '二级工会', '三级工会'].forEach(l => { m.org.byLevel[l] = m.org.byLevel[l] || { 已组建: 0, 筹建中: 0 }; });
-      levels.push('一级工会', '二级工会', '三级工会');
-    }
-    levels.forEach(level => {
-      const stat = m.org.byLevel[level] || { 已组建: 0, 筹建中: 0 };
-      const total = stat.已组建 + stat.筹建中;
-      const tr = document.createElement('tr');
-      tr.className = 'clickable';
-      tr.dataset.detail = '01-组织建设';
-      tr.dataset.filter = JSON.stringify({ key: '工会级别', value: level });
-      tr.innerHTML = `
-        <td>${escapeHtml(level)}</td>
-        <td class="cell-value">${stat.已组建}</td>
-        <td class="cell-value">${stat.筹建中}</td>
-        <td class="cell-value">${total}</td>`;
-      orgTbody.appendChild(tr);
-    });
-    // 合计行
-    const totalTr = document.createElement('tr');
-    totalTr.className = 'row-total';
-    totalTr.innerHTML = `
-      <td>合计</td>
-      <td class="cell-value">${m.org.established}</td>
-      <td class="cell-value">${m.org.preparing}</td>
-      <td class="cell-value">${m.org.total}</td>`;
-    orgTbody.appendChild(totalTr);
-  }
-}
 
 function escapeHtml(s) {
   if (s === null || s === undefined) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// 4. 模态层
+function tooltipStyle() {
+  const t = theme();
+  return {
+    backgroundColor: 'rgba(20, 34, 74, 0.95)',
+    borderColor: t.accent || '#4DD8FF',
+    borderWidth: 1,
+    textStyle: { color: t.text || '#E6EEFF' },
+    extraCssText: 'box-shadow: 0 4px 18px rgba(0,0,0,0.4);',
+  };
+}
+
+function axisStyle(rotate) {
+  const t = theme();
+  return {
+    axisLine: { lineStyle: { color: 'rgba(77,216,255,0.3)' } },
+    axisLabel: { color: t.muted || '#7E93BD', rotate: rotate || 0 },
+    splitLine: { lineStyle: { color: 'rgba(77,216,255,0.08)' } },
+  };
+}
+
+/** 长标签折行（如「员工直系亲属重大疾病」） */
+function wrapLabel(name, max) {
+  const s = String(name == null ? '' : name);
+  if (!max || s.length <= max) return s;
+  const out = [];
+  for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
+  return out.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// 主题注入
+// ---------------------------------------------------------------------------
+function applyTheme() {
+  const t = theme();
+  const r = document.documentElement.style;
+  const map = {
+    '--accent': t.accent, '--accent2': t.accent2, '--bg': t.bg,
+    '--card-bg': t.cardBg, '--card-bg2': t.cardBg2, '--card-border': t.cardBorder,
+    '--sub-card-bg': t.subCardBg, '--title-bar': t.titleBar,
+    '--text': t.text, '--muted': t.muted, '--danger': t.danger,
+  };
+  Object.keys(map).forEach(k => { if (map[k]) r.setProperty(k, map[k]); });
+  const L = (CFG && CFG.layout) || {};
+  if (L.maxWidth) r.setProperty('--max-width', L.maxWidth + 'px');
+  if (L.moduleGap) r.setProperty('--module-gap', L.moduleGap + 'px');
+  if (L.columnGap) r.setProperty('--column-gap', L.columnGap + 'px');
+  if (L.cardRadius) r.setProperty('--radius', L.cardRadius + 'px');
+}
+
+// ---------------------------------------------------------------------------
+// 顶部标题
+// ---------------------------------------------------------------------------
+function renderHeader() {
+  const T = (CFG && CFG.text) || {};
+  document.title = T.documentTitle || T.pageTitle || '数据看板';
+
+  const deco = T.titleDeco !== false;
+  document.getElementById('header-deco-left').style.display = deco ? '' : 'none';
+  document.getElementById('header-deco-right').style.display = deco ? '' : 'none';
+
+  const title = T.pageTitle || '';
+  document.getElementById('page-title').textContent = deco ? `━━━━━━\u00a0\u00a0\u00a0${title}\u00a0\u00a0\u00a0━━━━━━` : title;
+
+  const wrap = document.getElementById('page-subtitle');
+  wrap.innerHTML = '';
+  const items = T.subtitleItems || [];
+  items.forEach((it, i) => {
+    if (i > 0) {
+      const d = document.createElement('span');
+      d.className = 'divider';
+      d.textContent = '|';
+      wrap.appendChild(d);
+    }
+    let el;
+    switch (it.type) {
+      case 'adminLink':
+        el = document.createElement('a');
+        el.className = 'admin-link';
+        el.href = './admin.html';
+        el.target = '_blank';
+        el.textContent = it.text || '后台管理 »';
+        break;
+      case 'syncBadge':
+        el = document.createElement('span');
+        el.id = 'sync-badge';
+        el.className = 'sync-badge';
+        el.innerHTML = '<span class="sync-tag">本地存储</span><span class="sync-text">已就绪</span>';
+        break;
+      case 'logout':
+        el = document.createElement('a');
+        el.className = 'logout-link';
+        el.href = '#';
+        el.textContent = it.text || '退出';
+        el.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          await DashboardStore.authLogout();
+          location.replace('/login.html?role=dashboard');
+        });
+        break;
+      case 'hint':
+        el = document.createElement('span');
+        el.className = 'highlight';
+        el.textContent = it.text || '';
+        break;
+      default: {
+        el = document.createElement('span');
+        const txt = String(it.text || '');
+        const now = new Date();
+        el.textContent = txt.replace(/\{date\}/g, `${now.getFullYear()} 年 ${now.getMonth() + 1} 月 ${now.getDate()} 日`)
+          .replace(/\{time\}/g, now.toLocaleTimeString('zh-CN', { hour12: false }));
+      }
+    }
+    wrap.appendChild(el);
+  });
+
+  document.getElementById('page-footer').innerHTML = `<p>${escapeHtml((CFG.text || {}).footer || '')}</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// 结构渲染（模块 → 列 → 块）
+// ---------------------------------------------------------------------------
+function findChart(id) { return ((CFG && CFG.charts) || []).find(c => c.id === id); }
+function findTable(id) { return ((CFG && CFG.tables) || []).find(t => t.id === id); }
+function findMetric(id) { return ((CFG && CFG.metrics) || []).find(m => m.id === id); }
+
+function buildMetricsBlock(block) {
+  const card = document.createElement('div');
+  card.className = 'sub-card';
+  if (block.title) {
+    const t = document.createElement('div');
+    t.className = 'sub-card-title';
+    t.textContent = block.title;
+    card.appendChild(t);
+  }
+  const ids = (block.metricIds || []).filter(id => findMetric(id));
+  const row = document.createElement('div');
+  const isLast = true;
+  row.className = 'metric-row ' + (ids.length <= 2 ? 'metric-row-2' : ids.length === 3 ? 'metric-row-3' : ids.length === 4 ? 'metric-row-4' : 'metric-row-auto');
+  ids.forEach(id => {
+    const m = findMetric(id);
+    if (!m || m.visible === false) return;
+    const c = document.createElement('div');
+    const detail = m.detail && m.detail.sheet;
+    c.className = 'metric-card' + (detail ? ' clickable' : '');
+    if (detail) {
+      c.dataset.detail = m.detail.sheet;
+      if (m.detail.filterField) {
+        c.dataset.filter = JSON.stringify({ key: m.detail.filterField, value: m.detail.filterValue });
+      }
+    }
+    c.innerHTML = `
+      <div class="metric-label">${escapeHtml(m.label || id)}</div>
+      <div class="metric-value" data-metric="${escapeHtml(id)}">—</div>
+      <div class="metric-unit">${escapeHtml(m.unit || '')}</div>`;
+    row.appendChild(c);
+  });
+  if (row.children.length) card.appendChild(row);
+  if (!isLast && row.children.length) row.style.marginBottom = '14px';
+  return card;
+}
+
+function buildChartBlock(block) {
+  const card = document.createElement('div');
+  card.className = 'sub-card';
+  const def = findChart(block.refId);
+  const title = block.title !== undefined && block.title !== '' ? block.title : (def && def.title) || '';
+  if (title) {
+    const t = document.createElement('div');
+    t.className = 'sub-card-title';
+    t.textContent = title;
+    card.appendChild(t);
+  }
+  const area = document.createElement('div');
+  area.className = 'chart-area';
+  area.id = 'chart-' + block.id;
+  area.style.height = ((def && def.height) || 220) + 'px';
+  card.appendChild(area);
+  return card;
+}
+
+function buildTableBlock(block) {
+  const card = document.createElement('div');
+  card.className = 'sub-card';
+  const def = findTable(block.refId);
+  const title = block.title !== undefined && block.title !== '' ? block.title : (def && def.title) || '';
+  if (title) {
+    const t = document.createElement('div');
+    t.className = 'sub-card-title';
+    t.textContent = title;
+    card.appendChild(t);
+  }
+  const wrap = document.createElement('div');
+  wrap.id = 'table-' + block.id;
+  card.appendChild(wrap);
+  return card;
+}
+
+function buildNoteBlock(block) {
+  const card = document.createElement('div');
+  card.className = 'sub-card';
+  if (block.title) {
+    const t = document.createElement('div');
+    t.className = 'sub-card-title';
+    t.textContent = block.title;
+    card.appendChild(t);
+  }
+  const p = document.createElement('div');
+  p.className = 'note-block';
+  p.textContent = block.text || '';
+  card.appendChild(p);
+  return card;
+}
+
+function buildBlock(block) {
+  switch (block.type) {
+    case 'metrics': return buildMetricsBlock(block);
+    case 'chart': return buildChartBlock(block);
+    case 'table': return buildTableBlock(block);
+    case 'note': return buildNoteBlock(block);
+    default: {
+      const d = document.createElement('div');
+      return d;
+    }
+  }
+}
+
+/** 销毁所有图表实例（结构重建前） */
+function disposeCharts() {
+  Object.keys(charts).forEach(k => { try { charts[k] && charts[k].dispose(); } catch (_) {} delete charts[k]; });
+}
+
+function renderStructure() {
+  applyTheme();
+  renderHeader();
+  disposeCharts();
+
+  const root = document.getElementById('modules-root');
+  root.innerHTML = '';
+
+  (CFG.modules || []).filter(m => m.visible !== false).forEach(mod => {
+    const sec = document.createElement('section');
+    sec.className = 'module';
+
+    const head = document.createElement('div');
+    head.className = 'module-header';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'module-title';
+    titleSpan.textContent = mod.title || '';
+    head.appendChild(titleSpan);
+    if (mod.showDetail !== false && mod.sheet) {
+      const btn = document.createElement('button');
+      btn.className = 'module-action';
+      btn.dataset.detail = mod.sheet;
+      btn.textContent = ((CFG.text || {}).detailButtonText) || '查看明细 »';
+      head.appendChild(btn);
+    }
+    sec.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'mod-grid';
+    (mod.columns || []).forEach(col => {
+      const c = document.createElement('div');
+      c.className = 'mod-col';
+      c.style.gridColumn = `span ${Math.min(12, Math.max(1, col.width || 12))}`;
+      (col.blocks || []).filter(b => b.visible !== false).forEach(b => c.appendChild(buildBlock(b)));
+      grid.appendChild(c);
+    });
+    sec.appendChild(grid);
+    root.appendChild(sec);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 数值渲染
+// ---------------------------------------------------------------------------
+function fmtByMetric(m, v) {
+  if (!m) return String(v);
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+  const d = typeof m.decimals === 'number' ? m.decimals : 2;
+  return d === 0 ? String(Math.round(v)) : v.toFixed(d);
+}
+
+function renderValues() {
+  if (!DATA || !CFG) return;
+  METRICS = E.computeMetrics(DATA, CFG);
+
+  // 指标卡
+  document.querySelectorAll('[data-metric]').forEach(el => {
+    const id = el.dataset.metric;
+    const m = findMetric(id);
+    el.textContent = m ? fmtByMetric(m, METRICS[id]) : '—';
+  });
+
+  // 图表 / 表格
+  (CFG.modules || []).filter(m => m.visible !== false).forEach(mod => {
+    (mod.columns || []).forEach(col => {
+      (col.blocks || []).filter(b => b.visible !== false).forEach(b => {
+        if (b.type === 'chart') renderChartBlock(b);
+        else if (b.type === 'table') renderTableBlock(b);
+      });
+    });
+  });
+}
+
+function renderChartBlock(block) {
+  const def = findChart(block.refId);
+  const el = document.getElementById('chart-' + block.id);
+  if (!def || !el) return;
+  const sheet = DATA[def.sheet];
+  if (!sheet) return;
+
+  let inst = charts[block.id];
+  if (!inst) { inst = charts[block.id] = echarts.init(el); }
+  const list = E.groupRows(sheet, def);
+  inst.setOption(buildChartOption(def, list), true);
+}
+
+function buildChartOption(def, list) {
+  const T = theme();
+  const type = def.type || 'bar';
+  const labelShow = !(def.label && def.label.show === false);
+  const labelFormatter = (def.label && def.label.formatter) || '{c}';
+  const decimals = typeof def.decimals === 'number' ? def.decimals : 0;
+  const rnd = v => Number(Number(v).toFixed(Math.max(0, Math.min(6, decimals))));
+  const legendShow = !!(def.legend && def.legend.show);
+  const legendPos = (def.legend && def.legend.position) || 'bottom';
+
+  if (type === 'pie' || type === 'doughnut') {
+    return {
+      color: palette(),
+      tooltip: Object.assign(tooltipStyle(), { trigger: 'item' }),
+      legend: legendShow ? {
+        show: true,
+        orient: legendPos === 'right' ? 'vertical' : 'horizontal',
+        bottom: legendPos === 'right' ? undefined : 0,
+        right: legendPos === 'right' ? 0 : undefined,
+        top: legendPos === 'right' ? 'middle' : undefined,
+        textStyle: { color: T.text || '#E6EEFF', fontSize: 12 },
+        itemWidth: 12, itemHeight: 12,
+      } : { show: false },
+      series: [{
+        type: 'pie',
+        radius: type === 'doughnut' ? ['38%', '65%'] : '62%',
+        center: ['50%', '45%'],
+        avoidLabelOverlap: true,
+        itemStyle: { borderColor: T.cardBg2 || '#0E1A35', borderWidth: 2 },
+        label: { show: labelShow, color: T.text || '#E6EEFF', fontSize: 12, formatter: labelFormatter },
+        labelLine: { lineStyle: { color: T.accent || '#4DD8FF' } },
+        data: list.map(x => ({ name: x.name, value: rnd(x.value) })),
+      }],
+    };
+  }
+
+  const isH = type === 'hbar';
+  const isLine = type === 'line';
+  const wrapMax = def.wrapLabels ? 6 : 0;
+
+  const catData = list.map(x => (def.wrapLabels ? wrapLabel(x.name, wrapMax) : x.name));
+  const values = list.map(x => rnd(x.value));
+  const seriesData = values.map((v, i) => (isLine ? v : {
+    value: v,
+    itemStyle: {
+      color: new echarts.graphic.LinearGradient(
+        isH ? 0 : 0, isH ? 0 : 0, isH ? 1 : 0, isH ? 0 : 1,
+        [{ offset: 0, color: colorAt(i) }, { offset: 1, color: '#1E40AF' }]
+      ),
+    },
+  }));
+
+  const categoryAxis = Object.assign({ type: 'category', data: catData }, axisStyle(isH ? 0 : (def.axis && def.axis.rotate) || 0), {
+    axisLabel: {
+      color: T.muted || '#7E93BD',
+      fontSize: 12,
+      interval: 0,
+      lineHeight: 15,
+      rotate: isH ? 0 : ((def.axis && def.axis.rotate) || 0),
+    },
+  });
+  const valueAxis = Object.assign({ type: 'value' }, axisStyle(0), {
+    name: (def.axis && def.axis.yName) || '',
+    nameTextStyle: { color: T.muted || '#7E93BD' },
+  });
+
+  return {
+    tooltip: Object.assign(tooltipStyle(), { trigger: 'axis', axisPointer: { type: isLine ? 'line' : 'shadow' } }),
+    grid: isH
+      ? { left: 10, right: 40, top: 20, bottom: 20, containLabel: true }
+      : { left: 50, right: 30, top: 30, bottom: def.wrapLabels ? 60 : 50, containLabel: true },
+    xAxis: isH ? valueAxis : categoryAxis,
+    yAxis: isH ? categoryAxis : valueAxis,
+    series: [{
+      type: isLine ? 'line' : 'bar',
+      data: seriesData,
+      smooth: isLine,
+      symbolSize: isLine ? 8 : undefined,
+      label: {
+        show: labelShow,
+        position: isH ? 'right' : isLine ? 'top' : 'top',
+        color: T.accent || '#4DD8FF',
+        fontWeight: 700,
+        fontSize: 12,
+        formatter: (p) => {
+          const v = typeof p.value === 'object' ? p.value.value : p.value;
+          if (labelFormatter === '{c}') return decimals ? Number(v).toFixed(decimals) : String(v);
+          return labelFormatter.replace('{c}', String(v)).replace('{b}', String(p.name || ''));
+        },
+      },
+      lineStyle: isLine ? { color: colorAt(0), width: 2.5 } : undefined,
+      areaStyle: isLine ? {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(77,216,255,0.35)' }, { offset: 1, color: 'rgba(77,216,255,0.02)' },
+        ]),
+      } : undefined,
+      barWidth: isH ? undefined : (def.barWidth || 36),
+    }],
+  };
+}
+
+function renderTableBlock(block) {
+  const def = findTable(block.refId);
+  const host = document.getElementById('table-' + block.id);
+  if (!def || !host) return;
+  const sheet = DATA[def.sheet];
+  if (!sheet) { host.innerHTML = ''; return; }
+
+  const built = E.buildTable(sheet, def);
+  const cols = built.head || [];
+  const html = ['<table class="data-table"><thead><tr>'];
+
+  if (def.type === 'cross') {
+    html.push(`<th>${escapeHtml(def.rowField || '')}</th>`);
+    cols.forEach(c => html.push(`<th>${escapeHtml(c)}</th>`));
+    if (def.showTotalColumn !== false) html.push('<th>合计</th>');
+    html.push('</tr></thead><tbody>');
+    built.rows.forEach(r => {
+      const filter = def.detail && def.detail.filterField
+        ? ` data-detail="${escapeHtml(def.detail.sheet || def.sheet)}" data-filter='${escapeHtml(JSON.stringify({ key: def.detail.filterField, value: r.key }))}'`
+        : '';
+      const cls = def.detail && def.detail.filterField ? ' class="clickable"' : '';
+      html.push(`<tr${cls}${filter}><td>${escapeHtml(r.key)}</td>`);
+      r.cells.forEach(c => html.push(`<td class="cell-value">${c}</td>`));
+      if (def.showTotalColumn !== false) html.push(`<td class="cell-value">${r.total}</td>`);
+      html.push('</tr>');
+    });
+    if (def.showTotalRow !== false) {
+      html.push(`<tr class="row-total"><td>${escapeHtml(def.totalLabel || '合计')}</td>`);
+      (built.colTotals || []).forEach(c => html.push(`<td class="cell-value">${c}</td>`));
+      if (def.showTotalColumn !== false) html.push(`<td class="cell-value">${built.grand}</td>`);
+      html.push('</tr>');
+    }
+  } else {
+    html.push(`<th>${escapeHtml(def.groupBy || '')}</th>`);
+    cols.forEach(c => html.push(`<th>${escapeHtml(c)}</th>`));
+    html.push('</tr></thead><tbody>');
+    const colDefs = def.columns || [];
+    built.rows.forEach(r => {
+      const filter = def.detail && def.detail.filterField
+        ? ` data-detail="${escapeHtml(def.detail.sheet || def.sheet)}" data-filter='${escapeHtml(JSON.stringify({ key: def.detail.filterField, value: r.key }))}'`
+        : '';
+      const cls = def.detail && def.detail.filterField ? ' class="clickable"' : '';
+      html.push(`<tr${cls}${filter}><td>${escapeHtml(r.key)}</td>`);
+      r.cells.forEach((v, i) => {
+        const cd = colDefs[i] || {};
+        const txt = typeof v === 'number' ? E.fmtNum(v, typeof cd.decimals === 'number' ? cd.decimals : 0) : escapeHtml(v);
+        html.push(`<td class="cell-value">${txt}</td>`);
+      });
+      html.push('</tr>');
+    });
+  }
+  html.push('</tbody></table>');
+  host.innerHTML = html.join('');
+}
+
+// ---------------------------------------------------------------------------
+// 明细弹窗
+// ---------------------------------------------------------------------------
 function openDetail(sheetKey, filterRaw) {
   if (!DATA) return;
   const data = DATA[sheetKey];
   if (!data) return;
   let filter = null;
-  try { filter = filterRaw ? JSON.parse(filterRaw) : null; } catch (e) {}
+  try { filter = filterRaw ? (typeof filterRaw === 'string' ? JSON.parse(filterRaw) : filterRaw) : null; } catch (_) {}
+  if (filter && (filter.value === undefined || filter.value === null || filter.value === '')) filter = null;
 
   const modal = document.getElementById('detail-modal');
   const title = document.getElementById('modal-title');
@@ -329,11 +520,14 @@ function openDetail(sheetKey, filterRaw) {
   const body = document.getElementById('modal-body');
   const search = document.getElementById('modal-search');
 
-  title.textContent = data.title;
-  subtitle.innerHTML = escapeHtml(data.subtitle) + (filter ? `<span class="filter-tag">筛选：${escapeHtml(filter.key)} = "${escapeHtml(filter.value)}"</span>` : '');
+  title.textContent = data.title || sheetKey;
+  subtitle.innerHTML = escapeHtml(data.subtitle || '')
+    + (filter ? `<span class="filter-tag">筛选：${escapeHtml(filter.key)} = "${escapeHtml(filter.value)}"</span>` : '');
 
   const rows = data.rows.slice();
   const headers = data.headers;
+
+  const readVal = (r, h) => E.pick(r, headers, h);
 
   function renderTable(filteredRows) {
     const html = ['<table class="detail-table"><thead><tr>'];
@@ -342,20 +536,16 @@ function openDetail(sheetKey, filterRaw) {
     filteredRows.forEach(r => {
       html.push('<tr>');
       headers.forEach(h => {
-        const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[h] : (() => {
-          const i = headers.indexOf(h);
-          return i >= 0 ? r[i] : '';
-        })();
+        const v = readVal(r, h);
         const isEmpty = v === '' || v === null || v === undefined;
         const isNum = typeof v === 'number';
         const isLongText = typeof v === 'string' && v.length > 30;
         const cls = isEmpty ? 'empty-cell' : isNum ? 'cell-number' : isLongText ? 'cell-text' : '';
-        const display = isEmpty ? '—' : escapeHtml(v);
-        html.push(`<td class="${cls}">${display}</td>`);
+        html.push(`<td class="${cls}">${isEmpty ? '—' : escapeHtml(v)}</td>`);
       });
       html.push('</tr>');
     });
-    if (filteredRows.length === 0) {
+    if (!filteredRows.length) {
       html.push(`<tr><td colspan="${headers.length}" style="text-align:center; padding:32px; color:#7E93BD">暂无数据</td></tr>`);
     }
     html.push('</tbody></table>');
@@ -365,25 +555,14 @@ function openDetail(sheetKey, filterRaw) {
   function applyFilters() {
     let result = rows;
     if (filter) {
-      result = result.filter(r => {
-        const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[filter.key] : (() => {
-          const i = headers.indexOf(filter.key);
-          return i >= 0 ? r[i] : '';
-        })();
-        return String(v) === filter.value;
-      });
+      result = result.filter(r => String(readVal(r, filter.key) == null ? '' : readVal(r, filter.key)) === String(filter.value));
     }
     const q = (search.value || '').trim().toLowerCase();
     if (q) {
-      result = result.filter(r => {
-        return headers.some(h => {
-          const v = (r && typeof r === 'object' && !Array.isArray(r)) ? r[h] : (() => {
-            const i = headers.indexOf(h);
-            return i >= 0 ? r[i] : '';
-          })();
-          return v !== null && v !== undefined && String(v).toLowerCase().includes(q);
-        });
-      });
+      result = result.filter(r => headers.some(h => {
+        const v = readVal(r, h);
+        return v !== null && v !== undefined && String(v).toLowerCase().includes(q);
+      }));
     }
     renderTable(result);
   }
@@ -394,57 +573,11 @@ function openDetail(sheetKey, filterRaw) {
   modal.classList.remove('hidden');
 }
 
-function closeDetail() {
-  document.getElementById('detail-modal').classList.add('hidden');
-}
+function closeDetail() { document.getElementById('detail-modal').classList.add('hidden'); }
 
-// 5. 事件绑定
-function bindEvents() {
-  document.body.addEventListener('click', (e) => {
-    const target = e.target.closest('[data-detail]');
-    if (!target) {
-      if (e.target.id === 'detail-modal') closeDetail();
-      return;
-    }
-    openDetail(target.dataset.detail, target.dataset.filter);
-  });
-  document.getElementById('modal-close').addEventListener('click', closeDetail);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeDetail();
-  });
-}
-
-// 6. 启动
-async function boot() {
-  await DashboardStore.load();
-  DATA = DashboardStore.getData();
-  bindEvents();
-  renderDashboard();
-  renderTables();
-  refreshSyncBadge();
-
-  // 监听 store 更新（自己改、SSE 推送、跨 tab 都会触发）
-  DashboardStore.subscribe((_d, info) => {
-    // 仅状态变化（SSE 连上/断开）时只刷新徽章，避免无谓重绘
-    if (info && info.statusOnly) { refreshSyncBadge(); return; }
-    DATA = DashboardStore.getData();
-    renderDashboard();
-    renderTables();
-    refreshSyncBadge();
-    if (info && info.source === 'remote') {
-      flashHint('已收到云端最新数据，自动刷新');
-    }
-  });
-
-  // 定时刷新连接状态指示器
-  setInterval(refreshSyncBadge, 5000);
-
-  // 响应式
-  window.addEventListener('resize', () => {
-    Object.values(charts).forEach(c => c && c.resize());
-  });
-}
-
+// ---------------------------------------------------------------------------
+// 徽章 / 提示
+// ---------------------------------------------------------------------------
 function refreshSyncBadge() {
   const el = document.getElementById('sync-badge');
   if (!el || !window.DashboardStore) return;
@@ -461,9 +594,7 @@ function refreshSyncBadge() {
       const t = new Date(status.lastSync);
       const pad = n => String(n).padStart(2, '0');
       txt.textContent = `已同步 · ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
-    } else {
-      txt.textContent = '已就绪';
-    }
+    } else txt.textContent = '已就绪';
   }
 }
 
@@ -481,6 +612,73 @@ function flashHint(text) {
     hint.classList.remove('show');
     setTimeout(() => hint.remove(), 400);
   }, 2400);
+}
+
+function showSessionMask() {
+  const el = document.getElementById('session-mask');
+  if (el) el.classList.remove('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// 启动
+// ---------------------------------------------------------------------------
+function bindEvents() {
+  document.body.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-detail]');
+    if (!target) {
+      if (e.target.id === 'detail-modal') closeDetail();
+      return;
+    }
+    openDetail(target.dataset.detail, target.dataset.filter);
+  });
+  const closeBtn = document.getElementById('modal-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeDetail);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+  const relogin = document.getElementById('session-relogin');
+  if (relogin) relogin.addEventListener('click', () => location.replace('/login.html?role=dashboard'));
+}
+
+async function boot() {
+  CFG = window.SEED_CONFIG || {};
+  // 先用配置渲染骨架，避免白屏（随后用服务端配置覆盖）
+  try { renderStructure(); } catch (e) { console.error(e); }
+
+  const data = await DashboardStore.load();
+
+  if (!data) {
+    // 会话失效
+    showSessionMask();
+    return;
+  }
+  DATA = DashboardStore.getData();
+  CFG = DashboardStore.getConfig() || CFG;
+
+  renderStructure();
+  renderValues();
+  refreshSyncBadge();
+  bindEvents();
+
+  DashboardStore.subscribe((d, info) => {
+    refreshSyncBadge();
+    if (info && info.authRequired) { showSessionMask(); return; }
+    if (info && info.statusOnly) return;
+    if (info && info.configOnly) {
+      CFG = DashboardStore.getConfig() || CFG;
+      renderStructure();
+      renderValues();
+      if (info.source === 'remote') flashHint('看板配置已更新，自动刷新');
+      return;
+    }
+    DATA = DashboardStore.getData();
+    renderValues();
+    if (info && info.source === 'remote') flashHint('已收到云端最新数据，自动刷新');
+  });
+
+  setInterval(refreshSyncBadge, 5000);
+
+  window.addEventListener('resize', () => {
+    Object.values(charts).forEach(c => { try { c && c.resize(); } catch (_) {} });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', boot);

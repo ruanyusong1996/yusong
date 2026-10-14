@@ -45,6 +45,7 @@
 
 (function () {
   const STORAGE_KEY = 'hdj_dashboard_data_v1';
+  const CONFIG_KEY = 'hdj_dashboard_config_v1';
   const CLIENT_ID_KEY = 'hdj_client_id';
   const API_TIMEOUT_MS = 2000;
   const REQUIRED_KEYS = ['01-组织建设', '02-走访慰问', '03-员工活动', '04-经费收支'];
@@ -112,12 +113,15 @@
   })();
 
   let _data = null;
+  let _config = null;            // 看板配置（文字/布局/指标/图表/主题）
   let _mode = 'local';           // 'api' | 'local'
   let _connected = false;        // SSE 连接状态
   let _lastSync = null;          // 最近一次推送时间
   let _ready = false;
+  let _unauthorized = false;     // 会话失效 / 未登录
   const _readyCallbacks = [];
   const _listeners = new Set();
+  const _configListeners = new Set();
 
   let _sse = null;               // EventSource 实例
   let _sseReconnectTimer = null;
@@ -201,14 +205,31 @@
   // API 模式：HTTP 请求
   // -------------------------------------------------------------------------
 
-  async function apiGet() {
-    const resp = await fetch('/api/data', { cache: 'no-store' });
-    if (!resp.ok) throw new Error('GET /api/data ' + resp.status);
+  /** 会话失效错误（未登录 / 登录过期） */
+  function AuthError(msg) { const e = new Error(msg || '需要登录'); e.name = 'AuthError'; return e; }
+
+  async function httpJson(url, options) {
+    const resp = await fetch(url, options);
+    if (resp.status === 401 || resp.status === 403) {
+      _unauthorized = true;
+      _emit();
+      const err = AuthError('会话已失效，请重新登录');
+      err.status = resp.status;
+      throw err;
+    }
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      throw new Error(`${options && options.method || 'GET'} ${url} ${resp.status} ${t}`);
+    }
     return resp.json();
   }
 
+  async function apiGet() {
+    return httpJson('/api/data', { cache: 'no-store' });
+  }
+
   async function apiPut(newData) {
-    const resp = await fetch('/api/data', {
+    return httpJson('/api/data', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -217,11 +238,18 @@
       },
       body: JSON.stringify(newData),
     });
-    if (!resp.ok) {
-      const t = await resp.text().catch(() => '');
-      throw new Error('PUT /api/data ' + resp.status + ' ' + t);
-    }
-    return resp.json();
+  }
+
+  async function apiGetConfig() {
+    return httpJson('/api/config', { cache: 'no-store' });
+  }
+
+  async function apiPutConfig(cfg) {
+    return httpJson('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
+      body: JSON.stringify(cfg),
+    });
   }
 
   function hostNameSafe() {
@@ -229,8 +257,7 @@
   }
 
   async function apiReset() {
-    const resp = await fetch('/api/reset', { method: 'POST' });
-    if (!resp.ok) throw new Error('POST /api/reset ' + resp.status);
+    await httpJson('/api/reset', { method: 'POST' });
     return apiGet();
   }
 
@@ -273,6 +300,19 @@
           _emit();
         } catch (err) {
           console.error('[sse] 拉取最新数据失败', err);
+        }
+      });
+
+      // 他人改了「看板配置」→ 重新拉配置并重绘
+      _sse.addEventListener('config', async (e) => {
+        let payload = {};
+        try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
+        if (payload.editorId && payload.editorId === CLIENT_ID) return;
+        try {
+          await loadConfig();
+          _emit({ configOnly: true, source: 'remote' });
+        } catch (err) {
+          console.error('[sse] 拉取最新配置失败', err);
         }
       });
 
@@ -321,7 +361,10 @@
   // -------------------------------------------------------------------------
 
   async function load() {
-    if (_data) return _data;
+    if (_data) {
+      if (!_config) { try { await loadConfig(); } catch (_) {} }
+      return _data;
+    }
 
     const isApi = await probeApi();
     _mode = isApi ? 'api' : 'local';
@@ -332,6 +375,13 @@
         _data = await apiGet();
         _data = normalizeData(_data);
       } catch (e) {
+        if (e.name === 'AuthError') {
+          // 会话失效：交给页面显示登录层，不要再回退本地模式
+          _ready = true;
+          _readyCallbacks.forEach(cb => cb(null));
+          _emit({ authRequired: true });
+          return null;
+        }
         console.error('[DashboardStore] API 拉取失败，回退本地', e);
         _mode = 'local';
         _data = await loadLocal();
@@ -342,6 +392,8 @@
       _data = await loadLocal();
       _data = normalizeData(_data);
     }
+
+    try { await loadConfig(); } catch (_) {}
 
     _ready = true;
     _readyCallbacks.forEach(cb => cb(_data));
@@ -573,6 +625,142 @@
   }
 
   // -------------------------------------------------------------------------
+  // 看板配置（文字 / 布局 / 指标 / 图表 / 主题）
+  // -------------------------------------------------------------------------
+
+  function defaultConfig() { return clone(window.SEED_CONFIG || {}); }
+
+  function mergeWithDefaults(stored) {
+    const base = defaultConfig();
+    if (window.ConfigEngine && ConfigEngine.mergeConfig) return ConfigEngine.mergeConfig(base, stored);
+    return stored || base;
+  }
+
+  function loadLocalConfig() {
+    let stored = null;
+    try { stored = localStorage.getItem(CONFIG_KEY); } catch (_) {}
+    let parsed = null;
+    if (stored) { try { parsed = JSON.parse(stored); } catch (_) { console.warn('配置解析失败，回退默认'); } }
+    return mergeWithDefaults(parsed);
+  }
+
+  async function loadConfig() {
+    if (_mode === 'api') {
+      try {
+        const cfg = await apiGetConfig();
+        _config = mergeWithDefaults(cfg);
+      } catch (e) {
+        if (e.name === 'AuthError') throw e;
+        console.warn('[DashboardStore] 配置拉取失败，改用本地默认配置', e);
+        _config = loadLocalConfig();
+      }
+    } else {
+      _config = loadLocalConfig();
+    }
+    _configListeners.forEach(cb => { try { cb(_config); } catch (e) { console.error(e); } });
+    return _config;
+  }
+
+  /** 保存整份配置（后台「看板配置」用） */
+  async function saveConfig(cfg) {
+    const next = clone(cfg);
+    if (_mode === 'api') {
+      await apiPutConfig(next);
+      _config = mergeWithDefaults(next);
+    } else {
+      _config = next;
+      try { localStorage.setItem(CONFIG_KEY, JSON.stringify(next)); } catch (_) {}
+    }
+    _configListeners.forEach(cb => { try { cb(_config); } catch (e) { console.error(e); } });
+    _emit({ configOnly: true, source: 'local' });
+    return _config;
+  }
+
+  /** 恢复默认配置 */
+  async function resetConfig() {
+    const base = defaultConfig();
+    if (_mode === 'api') {
+      await apiPutConfig(base);
+    } else {
+      try { localStorage.removeItem(CONFIG_KEY); } catch (_) {}
+    }
+    _config = base;
+    _configListeners.forEach(cb => { try { cb(_config); } catch (e) { console.error(e); } });
+    _emit({ configOnly: true, source: 'reset' });
+    return _config;
+  }
+
+  function getConfig() { return _config; }
+  function subscribeConfig(cb) {
+    _configListeners.add(cb);
+    if (_config) { try { cb(_config); } catch (_) {} }
+    return () => _configListeners.delete(cb);
+  }
+
+  // -------------------------------------------------------------------------
+  // 登录 / 会话
+  // -------------------------------------------------------------------------
+
+  async function authStatus() {
+    if (_mode === 'local') {
+      return { mode: 'local', needAuth: false, dashboard: true, admin: true, offline: true };
+    }
+    try {
+      const s = await httpJson('/api/auth/status', { cache: 'no-store' });
+      s.mode = 'api';
+      s.needAuth = true;
+      return s;
+    } catch (e) {
+      return { mode: 'api', needAuth: false, dashboard: true, admin: true, error: e.message };
+    }
+  }
+
+  /** role: 'dashboard' | 'admin' */
+  async function authLogin(role, password) {
+    const resp = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, password }),
+    });
+    let body = {};
+    try { body = await resp.json(); } catch (_) {}
+    if (!resp.ok) {
+      const err = new Error(body.error || (resp.status === 401 ? '密码错误' : '登录失败'));
+      err.status = resp.status;
+      throw err;
+    }
+    _unauthorized = false;
+    return body;
+  }
+
+  async function authLogout() {
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    stopSSE();
+    _unauthorized = true;
+    _emit();
+    return true;
+  }
+
+  /** 修改密码（需后台会话）：role 指定要改哪个密码 */
+  async function authChangePassword(role, current, next) {
+    const resp = await fetch('/api/auth/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, current, next }),
+    });
+    let body = {};
+    try { body = await resp.json(); } catch (_) {}
+    if (!resp.ok) {
+      const err = new Error(body.error || '修改失败');
+      err.status = resp.status;
+      throw err;
+    }
+    return body;
+  }
+
+  function getAuthState() { return { unauthorized: _unauthorized, mode: _mode }; }
+
+  // -------------------------------------------------------------------------
   // 订阅 / 状态
   // -------------------------------------------------------------------------
 
@@ -610,7 +798,14 @@
   // -------------------------------------------------------------------------
 
   window.addEventListener('storage', (e) => {
-    if (_mode !== 'local' || e.key !== STORAGE_KEY || !e.newValue) return;
+    if (_mode !== 'local') return;
+    if (e.key === CONFIG_KEY) {
+      _config = loadLocalConfig();
+      _configListeners.forEach(cb => { try { cb(_config); } catch (err) { console.error(err); } });
+      _emit({ configOnly: true, source: 'storage-event' });
+      return;
+    }
+    if (e.key !== STORAGE_KEY || !e.newValue) return;
     try {
       _data = normalizeData(JSON.parse(e.newValue));
       _listeners.forEach(cb => { try { cb(_data, { source: 'storage-event' }); } catch (err) { console.error(err); } });
@@ -630,5 +825,11 @@
     getMode, getStatus,
     pickValue,
     BUILTIN_SCHEMA,  // 暴露供后台初次迁移时使用
+
+    // 看板配置
+    getConfig, saveConfig, resetConfig, subscribeConfig,
+
+    // 登录 / 会话
+    authStatus, authLogin, authLogout, authChangePassword, getAuthState,
   };
 })();

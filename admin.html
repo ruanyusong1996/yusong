@@ -22,6 +22,7 @@
         </p>
       </div>
       <div class="admin-toolbar">
+        <a href="./index.html" target="_blank" class="btn btn-ghost" id="btn-preview">看板预览</a>
         <button id="btn-export" class="btn btn-ghost">导出 JSON</button>
         <button id="btn-import" class="btn btn-ghost">导入 JSON</button>
         <input id="file-import" type="file" accept=".json" style="display:none" />
@@ -67,26 +68,51 @@
     <button class="tab-btn" data-tab="02-走访慰问">二、走访慰问 <span class="tab-badge" id="badge-02-走访慰问">0</span></button>
     <button class="tab-btn" data-tab="03-员工活动">三、员工活动 <span class="tab-badge" id="badge-03-员工活动">0</span></button>
     <button class="tab-btn" data-tab="04-经费收支">四、经费收支 <span class="tab-badge" id="badge-04-经费收支">0</span></button>
+    <button class="tab-btn" data-tab="__config">🎨 看板配置</button>
+    <button class="tab-btn" data-tab="__security">🔒 安全设置</button>
   </nav>
 
   <!-- Tab 内容 -->
   <main class="admin-main">
-    <!-- 工具条 -->
-    <div class="tab-toolbar">
-      <input type="text" class="admin-search" id="admin-search" placeholder="搜索当前表（按任意字段）" />
-      <button class="btn btn-primary" id="btn-add">＋ 新增记录</button>
-      <button class="btn btn-ghost" id="btn-schema" title="增删改字段、编辑下拉选项">⚙ 列管理</button>
-      <span class="tab-info" id="schema-summary">—</span>
-      <span class="tab-info" id="tab-info">—</span>
+    <!-- 数据管理面板 -->
+    <div id="panel-data">
+      <!-- 工具条 -->
+      <div class="tab-toolbar">
+        <input type="text" class="admin-search" id="admin-search" placeholder="搜索当前表（按任意字段）" />
+        <button class="btn btn-primary" id="btn-add">＋ 新增记录</button>
+        <button class="btn btn-ghost" id="btn-schema" title="增删改字段、编辑下拉选项">⚙ 列管理</button>
+        <span class="tab-info" id="schema-summary">—</span>
+        <span class="tab-info" id="tab-info">—</span>
+      </div>
+
+      <!-- 数据表 -->
+      <div class="admin-table-wrap">
+        <table class="admin-table" id="admin-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+        <div id="admin-empty" class="admin-empty hidden">暂无数据，点击「新增记录」开始添加</div>
+      </div>
     </div>
 
-    <!-- 数据表 -->
-    <div class="admin-table-wrap">
-      <table class="admin-table" id="admin-table">
-        <thead></thead>
-        <tbody></tbody>
-      </table>
-      <div id="admin-empty" class="admin-empty hidden">暂无数据，点击「新增记录」开始添加</div>
+    <!-- 看板配置面板（由 admin.js 动态渲染） -->
+    <div id="panel-config" class="hidden">
+      <div class="cfg-topbar">
+        <div class="cfg-topbar-tip">
+          💡 这里决定看板的<b>文字、配色、模块与布局、指标公式、图表样式</b>。改完点「保存配置」，看板端会实时刷新。
+        </div>
+        <div class="cfg-topbar-actions">
+          <button class="btn btn-ghost" id="cfg-reload">放弃修改</button>
+          <button class="btn btn-ghost" id="cfg-reset">恢复默认配置</button>
+          <button class="btn btn-primary" id="cfg-save">保存配置</button>
+        </div>
+      </div>
+      <div id="cfg-root"></div>
+    </div>
+
+    <!-- 安全设置面板（由 admin.js 动态渲染） -->
+    <div id="panel-security" class="hidden">
+      <div id="sec-root"></div>
     </div>
   </main>
 
@@ -169,7 +195,9 @@
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
+  <script src="./seed-config.js"></script>
   <script src="./seed-data.js"></script>
+  <script src="./config-engine.js"></script>
   <script src="./data-store.js"></script>
   <script src="./admin.js"></script>
 </body>

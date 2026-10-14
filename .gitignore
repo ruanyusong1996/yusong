@@ -12,6 +12,9 @@ yarn-error.log*
 
 # 运行时数据（保留在云端持久卷，不要提交）
 server-data.json
+server-config.json
+# 密码哈希，严禁提交
+server-auth.json
 
 # 测试产物（截图）
 *.png

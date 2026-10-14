@@ -1,0 +1,97 @@
+#!/bin/bash
+# 后端鉴权 + 配置接口 集成测试
+# 注意：本机环境设置了 HTTP_PROXY/HTTPS_PROXY，访问 127.0.0.1 必须 --noproxy '*'
+BASE=${BASE:-http://127.0.0.1:5300}
+J=/tmp/cookies.txt
+JA=/tmp/cookies-admin.txt
+PASS=0; FAIL=0
+export no_proxy='127.0.0.1,localhost' NO_PROXY='127.0.0.1,localhost'
+
+cur()  { curl -s --noproxy '*' "$@"; }
+code() { curl -s --noproxy '*' -o /dev/null -w "%{http_code}" "$@"; }
+
+t() { # $1 描述 $2 实际 $3 期望
+  if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✓ $1  ($2)";
+  else FAIL=$((FAIL+1)); echo "  ❌ $1  实际=$2 期望=$3"; fi
+}
+
+echo "【0】健康检查"
+t "GET /api/health 200" "$(code $BASE/api/health)" "200"
+
+echo "【1】未登录时的门禁"
+t "GET / 应重定向到登录页" "$(code -I $BASE/)" "302"
+t "GET /admin.html 应重定向" "$(code -I $BASE/admin.html)" "302"
+t "GET /api/data 应 401" "$(code $BASE/api/data)" "401"
+t "GET /api/config 应 401" "$(code $BASE/api/config)" "401"
+t "GET /api/stream 应 401" "$(code $BASE/api/stream)" "401"
+t "PUT /api/data 应 401" "$(code -X PUT -H 'Content-Type: application/json' -d '{}' $BASE/api/data)" "401"
+t "GET /login.html 公开" "$(code $BASE/login.html)" "200"
+t "静态 styles.css 公开" "$(code $BASE/styles.css)" "200"
+t "app.js 未登录不可取" "$(code $BASE/app.js)" "302"
+
+echo "【2】看板密码登录（默认 gonghui123）"
+t "错误密码应 401" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","password":"wrong"}' $BASE/api/auth/login)" "401"
+t "正确密码应 200" "$(code -c $J -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","password":"gonghui123"}' $BASE/api/auth/login)" "200"
+t "看板会话可为 dashboard" "$(cur -b $J $BASE/api/auth/status | grep -o '"dashboard":true' | head -1)" '"dashboard":true'
+t "看板会话不可为 admin" "$(cur -b $J $BASE/api/auth/status | grep -o '"admin":false' | head -1)" '"admin":false'
+t "看板可读数据" "$(code -b $J $BASE/api/data)" "200"
+t "看板可读配置" "$(code -b $J $BASE/api/config)" "200"
+t "看板不可写数据(401)" "$(code -b $J -X PUT -H 'Content-Type: application/json' -d '{}' $BASE/api/data)" "401"
+t "看板不可改配置(401)" "$(code -b $J -X PUT -H 'Content-Type: application/json' -d '{}' $BASE/api/config)" "401"
+t "看板访问 admin.html 重定向" "$(code -b $J -I $BASE/admin.html)" "302"
+t "看板可取 app.js" "$(code -b $J $BASE/app.js)" "200"
+
+echo "【3】后台密码登录（默认 admin123）"
+t "后台会话登录" "$(code -c $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","password":"admin123"}' $BASE/api/auth/login)" "200"
+t "后台可访问 admin.html" "$(code -b $JA $BASE/admin.html)" "200"
+t "后台可读数据" "$(code -b $JA $BASE/api/data)" "200"
+t "后台可读配置" "$(code -b $JA $BASE/api/config)" "200"
+
+echo "【4】配置写入"
+CFG=$(cur -b $JA $BASE/api/config)
+echo "$CFG" | python3 -c "
+import json,sys
+c=json.load(sys.stdin)
+c['text']['pageTitle']='集成测试标题'
+json.dump(c, open('/tmp/cfg-new.json','w'), ensure_ascii=False)
+print('  指标数:', len(c['metrics']), '| 模块数:', len(c['modules']), '| 图表数:', len(c['charts']), '| 统计表数:', len(c['tables']))
+"
+t "PUT 配置 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/cfg-new.json $BASE/api/config)" "200"
+t "配置已生效" "$(cur -b $JA $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"]["pageTitle"])')" "集成测试标题"
+t "非法配置(缺 modules) 应 400" "$(code -b $JA -X PUT -H 'Content-Type: application/json' -d '{"a":1}' $BASE/api/config)" "400"
+
+echo "【5】数据写入权限"
+cur -b $JA $BASE/api/data > /tmp/data-current.json
+t "后台 PUT 数据 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/data-current.json $BASE/api/data)" "200"
+
+echo "【6】修改密码（改密码需先验证当前后台密码；改密后其它会话被踢）"
+t "错误当前后台密码 应 403" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","current":"bad","next":"newpass1"}' $BASE/api/auth/password)" "403"
+t "新密码过短 应 400" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","current":"admin123","next":"123"}' $BASE/api/auth/password)" "400"
+t "改看板密码 200" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","current":"admin123","next":"viewpass9"}' $BASE/api/auth/password)" "200"
+t "旧看板密码失效" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","password":"gonghui123"}' $BASE/api/auth/login)" "401"
+t "新看板密码可用" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","password":"viewpass9"}' $BASE/api/auth/login)" "200"
+t "其他人会话已被踢下线" "$(code -b $J $BASE/api/data)" "401"
+
+echo "【7】改回原密码 & 改后台密码"
+t "改回看板密码" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","current":"admin123","next":"gonghui123"}' $BASE/api/auth/password)" "200"
+t "改后台密码" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","current":"admin123","next":"admin2026"}' $BASE/api/auth/password)" "200"
+t "旧后台密码失效" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"admin","password":"admin123"}' $BASE/api/auth/login)" "401"
+t "新后台密码可用" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"admin","password":"admin2026"}' $BASE/api/auth/login)" "200"
+t "改回后台默认密码" "$(code -b $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","current":"admin2026","next":"admin123"}' $BASE/api/auth/password)" "200"
+t "改回后默认后台密码可用" "$(code -X POST -H 'Content-Type: application/json' -d '{"role":"admin","password":"admin123"}' $BASE/api/auth/login)" "200"
+
+echo "【8】退出登录"
+t "登出 200" "$(code -b $JA -X POST $BASE/api/auth/logout)" "200"
+t "登出后 admin.html 重定向" "$(code -b $JA -I $BASE/admin.html)" "302"
+
+echo "【9】还原测试前的看板配置"
+code -c $J  -X POST -H 'Content-Type: application/json' -d '{"role":"dashboard","password":"gonghui123"}' $BASE/api/auth/login > /dev/null
+code -c $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","password":"admin123"}'   $BASE/api/auth/login > /dev/null
+t "还原配置 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/config-backup.json $BASE/api/config)" "200"
+t "配置已还原" "$(cur -b $J $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"]["pageTitle"])')" "海底捞集团工会工作数据看板"
+
+echo
+echo "==============================="
+echo " 通过 $PASS 项 / 失败 $FAIL 项"
+echo "==============================="
+exit $([ $FAIL -eq 0 ] && echo 0 || echo 1)
