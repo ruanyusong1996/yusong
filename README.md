@@ -62,7 +62,13 @@ output/
 │
 ├── data-store.js        # ★ 数据访问层：自动在「API 模式」和「本地模式」间切换
 ├── lib/echarts.min.js   # 本地图表库（无外网依赖）
-└── node_modules/        # 依赖（npm install 生成）
+├── node_modules/        # 依赖（npm install 生成）
+│
+├── test-persistence.js       # 回归测试 A：数据持久化（含「静默降级必须上报」）
+├── test-auth-config.sh       # 回归测试 B：鉴权 / 配置 / 备份（78 项）
+├── test-e2e-cdp.js           # 回归测试 C：真实浏览器 E2E（CDP 驱动）
+├── run-auth-test-local.js    # 本地跑 B 的包装（同进程起服务）
+└── run-e2e-local.js          # 本地跑 C 的包装（同进程起服务）
 ```
 
 ---
@@ -214,6 +220,31 @@ location / {
 
 1. **并发写入**：服务端对写操作做了串行化（`writeChain`）+ 原子替换（先写 `.tmp` 再 rename），避免并发把文件写坏。
 2. **多人同时改同一条**：采用「后写覆盖」策略（last-write-wins）。如果需要字段级合并或版本冲突检测，需要再加一层乐观锁。
-3. **没有登录鉴权**：目前接口开放，任何能访问该地址的人都能改数据。如需限制，可在 `server.js` 加一层简单的 Token 校验（如 `Authorization: Bearer xxx`）。
+3. **登录鉴权**：看板页需「看板密码」，后台页与所有写接口需「后台密码」；两个密码可在后台「安全设置」里随时修改。密码用 scrypt + 随机盐哈希存储，会话走 HttpOnly Cookie（12 小时有效、内存态、重启即失效）。
 4. **数据备份**：直接复制 `server-data.json` 即可；后台页面的「导出 JSON」也能下载快照。
 5. **SSE 与代理**：经 Nginx / 云负载均衡时务必关闭响应缓冲，否则推送会被攒着不发出。
+
+---
+
+## 八、回归测试
+
+改完代码后**务必全跑一遍**，尤其是 `test:persist` —— 它守的就是「重新部署数据被清空」这条底线。
+
+```bash
+npm run test:persist           # 53 项：数据目录解析 / 重启后数据还在 / 防误清空 / 备份恢复 / 降级告警
+npm run test:api               # 78 项：鉴权、配置、备份、静态文件白名单
+npm run test:e2e               # 76 项：真实浏览器跑看板 + 后台（持久目录）
+npm run test:e2e:nonpersist    # 85 项：模拟「卷没挂上」，验证告警条与标红
+npm test                       # 依次跑前三个
+```
+
+| 脚本 | 覆盖内容 |
+| --- | --- |
+| `test-persistence.js A` | `DATA_DIR` 解析、启动自检、写后读回 |
+| `test-persistence.js B` | **重启（等价于重新部署）后数据标记仍在**、空写入被拒、备份一键恢复 |
+| `test-persistence.js C` | 主目录为空时从其它候选目录「认领」数据，而不是退回种子 |
+| `test-persistence.js D` | 目标卷不可用时**必须如实上报 `persistent:false`**，且写/备份仍可用 |
+
+> ⚠️ 本仓库的测试脚本都是「**同进程内启动服务**」（`require('./server.js')`），
+> 不是后台常驻进程。因此在受限环境里也能跑，不需要 `npm start` 先起服务。
+

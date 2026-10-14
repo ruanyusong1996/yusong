@@ -30,6 +30,9 @@ const BASE = process.env.BASE || 'http://127.0.0.1:5300';
 const BACKUP = process.env.CFG_BACKUP || '/tmp/config-backup.json';
 const SID = process.env.SID || '';
 const SID_ADMIN = process.env.SID_ADMIN || '';
+// 当数据目录落在「代码目录」里时，服务端会判定为「非持久」，后台应弹出告警条。
+// 用 E2E_NONPERSIST=1 跑一遍即可覆盖这条最关键的失败路径。
+const NONPERSIST = process.env.E2E_NONPERSIST === '1';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const getJson = url => new Promise((res, rej) => {
@@ -364,7 +367,12 @@ class CDP {
   }));
   t('存在「数据存储与备份」分区', !!(storeInfo && storeInfo.hasSection), true);
   t('显示持久化状态', /持久化/.test(storeInfo.text), true);
-  t('本地测试目录被判定为持久目录', /is-ok/.test(storeInfo.persistentClass), true);
+  if (NONPERSIST) {
+    t('非持久目录被标红（is-bad）', /is-bad/.test(storeInfo.persistentClass), true);
+    t('提示重新部署会重置数据', /重新部署|重置/.test(storeInfo.text), true);
+  } else {
+    t('本地测试目录被判定为持久目录', /is-ok/.test(storeInfo.persistentClass), true);
+  }
   t('展示数据目录/文件等 5 项信息', storeInfo.tableRows, 5);
   t('有快照列表或提示', storeInfo.backupRows + storeInfo.restoreBtns >= 1, true);
   t('有「立即备份」按钮', storeInfo.hasBackupNow, true);
@@ -442,6 +450,55 @@ class CDP {
   console.log('\n【F】运行期 JS 异常');
   console.log('    捕获异常数:', consoleErrs.length, consoleErrs.slice(0, 3));
   t('无未捕获 JS 异常', consoleErrs.length, 0);
+
+  console.log('\n【G】非持久存储告警条（用户实际踩过的坑）');
+  // 【D】【E】结束时停在看板页，告警条长在 admin.html 上，必须先回后台
+  await gotoAdmin();
+  if (!NONPERSIST) {
+    // 持久目录下「不应该」出现告警条 —— 反向验证，避免长期挂着一个吓人的红条
+    const noWarn = await cdp.evalJs('!document.getElementById("storage-warn")');
+    t('持久目录下不显示告警条', noWarn, true);
+  } else {
+    await waitFor('!!document.getElementById("storage-warn")', '告警条出现', 8000).catch(() => {});    const warn = await cdp.evalJs(`(function(){
+      const el = document.getElementById('storage-warn');
+      if (!el) return { found: false };
+      const cs = getComputedStyle(el);
+      return {
+        found: true,
+        visible: el.offsetParent !== null && cs.display !== 'none',
+        text: el.textContent.replace(/\\s+/g,' ').trim(),
+        hasClose: !!document.getElementById('storage-warn-close'),
+        position: cs.position,
+      };
+    })()`);
+    console.log('    ', JSON.stringify(warn));
+    t('非持久时弹出告警条', warn.found, true);
+    t('告警条真实可见（未被 display:none 吃掉）', warn.visible, true);
+    t('告警条吸顶（滚动时不会消失，也不压住内容）', warn.position, 'sticky');
+    t('文案点明「重新部署后会丢失」', /重新部署[\s\S]{0,12}(丢失|清空|消失)/.test(warn.text), true);
+    t('文案给出可执行的补救路径（/data）', /\/data/.test(warn.text), true);
+    t('告警条有关闭按钮', warn.hasClose, true);
+
+    // 点「知道了」应能关掉，不遮挡后续操作
+    const closed = await cdp.evalJs(`(async()=>{
+      document.getElementById('storage-warn-close').click();
+      await new Promise(r=>setTimeout(r,300));
+      return !document.getElementById('storage-warn');
+    })()`);
+    t('点「知道了」可关闭告警条', closed, true);
+
+    // 后台「数据存储与备份」分区在非持久时必须标红，且给出补救文案
+    await clickTab('__security', '!!document.querySelector("#sec-storage-body .store-status")', '安全设置(非持久)');
+    const bad = await cdp.evalJs(`(function(){
+      const box = document.querySelector('#sec-storage-body');
+      return {
+        cls: (box.querySelector('.store-status')||{}).className || '',
+        text: box.textContent.replace(/\\s+/g,' ').trim(),
+      };
+    })()`);
+    t('安全面板存储状态标红', /is-bad/.test(bad.cls), true);
+    t('安全面板提示补救方法', /持久卷|挂载/.test(bad.text), true);
+  }
 
   console.log('\n===============================');
   console.log(` 通过 ${PASS} 项 / 失败 ${FAIL} 项`);

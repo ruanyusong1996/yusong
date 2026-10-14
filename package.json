@@ -6,7 +6,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node test-persistence.js all && node run-auth-test-local.js && node run-e2e-local.js",
+    "test:persist": "node test-persistence.js all",
+    "test:api": "node run-auth-test-local.js",
+    "test:e2e": "node run-e2e-local.js",
+    "test:e2e:nonpersist": "E2E_NONPERSIST=1 E2E_DATA_DIR=./.nonpersist-test-data E2E_PORT=5333 node run-e2e-local.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

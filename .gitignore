@@ -27,3 +27,6 @@ server-auth.json
 # 本地持久化候选目录与自动快照（不入库）
 data/
 backups/
+
+# 测试用的临时数据目录
+.nonpersist-test-data/

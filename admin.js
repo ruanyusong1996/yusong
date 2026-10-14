@@ -2000,9 +2000,48 @@ async function refreshStorageSection() {
 }
 
 // ============ 启动 ============
+/** 把服务端返回的存储来源翻译成人话，避免用户看到 env / app-root 这种内部值发懵 */
+const STORAGE_MODE_LABEL = {
+  env: '环境变量指定的目录',
+  volume: '持久卷',
+  mount: '持久挂载点',
+  'app-data': '代码目录下的 data/（非持久）',
+  'app-root': '代码目录本身（非持久）',
+};
+const storageModeLabel = m => STORAGE_MODE_LABEL[m] || (m ? `${m}（非持久）` : '未知');
+
+/**
+ * 数据没写在持久目录时，在后台顶部常驻一条告警。
+ * 这就是「每次重新部署数据被清空」的直接原因，必须让用户一眼看到。
+ */
+async function checkStorageWarning() {
+  try {
+    const r = await fetch('/api/health', { cache: 'no-store' });
+    const h = await r.json();
+    if (h && h.persistent === false) showStorageWarning(storageModeLabel(h.storageMode), h.dataMtime);
+  } catch (_) { /* 本地模式没有这个接口，忽略 */ }
+}
+
+function showStorageWarning(mode, dataMtime) {
+  if (document.getElementById('storage-warn')) return;
+  const d = document.createElement('div');
+  d.id = 'storage-warn';
+  d.className = 'storage-warn';
+  d.innerHTML = `
+    <span class="sw-icon">!</span>
+    <span class="sw-text">
+      <b>数据写在临时目录，平台重新部署后会丢失</b>（当前实际写在：${escapeHtml(mode || '未知')}${dataMtime ? '，最近写入 ' + escapeHtml(fmtTime(dataMtime)) : ''}）
+      —— 请给该服务挂一块持久卷、<b>挂载路径填 /data</b>，然后重新部署。
+      在此之前的一切修改，都可能在下次部署时消失。
+    </span>
+    <button class="sw-close" type="button" id="storage-warn-close">知道了</button>`;
+  document.body.prepend(d);
+  const btn = document.getElementById('storage-warn-close');
+  if (btn) btn.addEventListener('click', () => d.remove());
+}
+
 /** 数据读取失败时的提示层（不会再拿示例数据冒充真实数据） */
-function showLoadErrorScreen(msg) {
-  const wrap = document.createElement('div');
+function showLoadErrorScreen(msg) {  const wrap = document.createElement('div');
   wrap.className = 'load-error-screen';
   wrap.innerHTML = `
     <div class="les-card">
@@ -2023,6 +2062,7 @@ async function boot() {
     location.replace('/login.html?role=admin&next=/admin.html');
     return;
   }
+  checkStorageWarning();   // 数据没写在持久盘上 → 顶部常驻告警（重新部署会丢数据）
   CFG = DashboardStore.getConfig() || window.SEED_CONFIG;
   refreshAll();
 

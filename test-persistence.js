@@ -185,12 +185,60 @@ async function phaseC() {
   summary('阶段 C');
 }
 
+/**
+ * 阶段 D —— 复盘「用户真实踩的那个坑」：
+ * 环境变量 DATA_DIR 指向一个没挂载成功的路径（线上就是 DATA_DIR=/data 但 /data 不存在），
+ * 服务只能退回到「代码目录」。此时必须：
+ *   1) 明确报告 persistent=false / storageMode=app-data（而不是假装一切正常）
+ *   2) 仍然能正常读写（不能直接崩），但前端据此弹告警条
+ *   3) 仍然给 /api/storage 诊断信息，能看出候选目录里为什么没选中 /data
+ * 这条用例的价值：以前「静默降级」没有任何地方会报警，于是每次重新部署都丢数据而无人察觉。
+ */
+async function phaseD() {
+  // 代码目录下的 data/ 存在 → 解析链会退到第 3 档 app-data（与线上 app-root 同为「非持久」）
+  fs.rmSync(LOCAL_CANDIDATE, { recursive: true, force: true });
+  fs.mkdirSync(LOCAL_CANDIDATE, { recursive: true });
+  const missingVolume = path.join(WORK, 'not-mounted');   // 故意不存在，模拟 /data 没挂上
+  fs.rmSync(missingVolume, { recursive: true, force: true });
+
+  await startServer(missingVolume);
+  section('D 目标盘不可用时「静默降级」必须被显式上报（线上故障复盘）');
+
+  const h = (await GET('/api/health')).json;
+  t('服务仍能启动（不崩）', (await GET('/api/health')).status, 200);
+  t('health.persistent = false（不再假装正常）', h.persistent, 'false');
+  t('health.storageMode = app-data（如实报告退回到了代码目录）', h.storageMode, 'app-data');
+  t('health 带 dataMtime 字段（前端告警条要用）', typeof h.dataMtime, 'string');
+  t('health.version 非空', !!(h.version && h.version.length > 0), 'true');
+
+  t('后台登录成功', await login('admin', 'admin123'), 200);
+  const s = (await GET('/api/storage')).json;
+  t('storage.persistent = false', s.persistent, 'false');
+  t('storage.dataDir 落在代码目录内', s.dataDir.startsWith(ROOT + path.sep), 'true');
+  t('storage.dataDirSource = app-data', s.dataDirSource, 'app-data');
+  t('storage 仍能报告行数', s.rows > 0, 'true');
+  t('候选清单里能看到没挂上的目标盘', s.candidates.some(c => c.includes('not-mounted')), 'true');
+  t('候选清单里始终保留 /data（挂上就能自动生效）', s.candidates.some(c => c.startsWith('/data ')), 'true');
+  t('备份目录跟随数据目录', s.backupDir.startsWith(s.dataDir), 'true');
+
+  // 降级 ≠ 不可用：写入必须照常成功，否则用户连数据都改不了
+  const d = (await GET('/api/data')).json;
+  d._meta = { ...(d._meta || {}), DEGRADED_WRITE: 'ok' };
+  t('降级状态下 PUT 数据 → 200', (await PUT('/api/data', d)).status, 200);
+  t('降级状态下写入生效', (await GET('/api/data')).json._meta.DEGRADED_WRITE, 'ok');
+  t('降级状态下备份仍可用', (await POST('/api/backups', { kind: 'data' })).status, 200);
+  t('降级状态下防误清空仍然生效', (await PUT('/api/data', {})).status, 400);
+
+  fs.rmSync(LOCAL_CANDIDATE, { recursive: true, force: true });
+  summary('阶段 D');
+}
+
 // ---------------------------------------------------------------------------
 
 (async () => {
   const phase = (process.argv[2] || 'all').toUpperCase();
   if (phase === 'ALL') {
-    for (const p of ['A', 'B', 'C']) {
+    for (const p of ['A', 'B', 'C', 'D']) {
       const r = spawnSync(NODE, [__filename, p], { stdio: 'inherit', cwd: ROOT });
       if (r.status !== 0) { console.log(`\n❌ 阶段 ${p} 失败`); process.exit(1); }
     }
@@ -201,5 +249,6 @@ async function phaseC() {
   if (phase === 'A') await phaseA();
   else if (phase === 'B') await phaseB();
   else if (phase === 'C') await phaseC();
-  else { console.error('用法: node test-persistence.js [A|B|C|all]'); process.exit(2); }
+  else if (phase === 'D') await phaseD();
+  else { console.error('用法: node test-persistence.js [A|B|C|D|all]'); process.exit(2); }
 })().catch(e => { console.error('测试异常:', e); process.exit(1); });
