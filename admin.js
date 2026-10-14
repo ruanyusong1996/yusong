@@ -212,6 +212,52 @@ function renderTable() {
   info.textContent = `共 ${rows.length} 条${q ? ` · 筛选 ${filtered.length} 条` : ''}`;
 }
 
+// ============ 数字输入：最多 2 位小数（也允许整数）============
+const NUM_MAX_DECIMALS = 2;
+/** 合法数字：整数，或最多 2 位小数（可选负号，仅当字段允许负数） */
+const NUM_PATTERN = /^-?\d+(\.\d{1,2})?$/;
+
+/** 实时闸门：拦截非法字符与第 3 位小数，支持粘贴自动清洗（全角/千分位等） */
+function attachNumberGuard(input, def) {
+  const allowNegative = !(typeof def.min === 'number' && def.min >= 0);
+
+  function sanitize(raw) {
+    let s = String(raw == null ? '' : raw);
+    // 全角数字/符号转半角
+    s = s.replace(/[\uFF10-\uFF19\uFF0E\uFF0D]/g, ch =>
+      ch === '\uFF0E' ? '.' : ch === '\uFF0D' ? '-' : String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+    // 去掉千分位分隔符、空格及一切非数字/小数点/负号字符
+    s = s.replace(/[,\s]/g, '').replace(/[^\d.\-]/g, '');
+    // 负号：只保留开头一个，且字段允许负数时才保留
+    const wantNeg = allowNegative && s.charAt(0) === '-';
+    s = s.replace(/-/g, '');
+    // 只保留第一个小数点，且小数部分最多 2 位
+    const dot = s.indexOf('.');
+    if (dot !== -1) {
+      s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+      const parts = s.split('.');
+      s = parts[0] + '.' + (parts[1] || '').slice(0, NUM_MAX_DECIMALS);
+    }
+    return (wantNeg ? '-' : '') + s;
+  }
+
+  input.addEventListener('input', () => {
+    const before = input.value;
+    const after = sanitize(before);
+    if (before === after) return;
+    const pos = input.selectionStart;
+    input.value = after;
+    const next = Math.max(0, (pos || after.length) + (after.length - before.length));
+    try { input.setSelectionRange(next, next); } catch (_) { /* 忽略 */ }
+  });
+
+  // 失焦时清理"12."这类未完成输入 → 12
+  input.addEventListener('blur', () => {
+    if (/^-?\d+\.$/.test(input.value)) input.value = input.value.slice(0, -1);
+    if (input.value === '-' || input.value === '.') input.value = '';
+  });
+}
+
 // ============ 行编辑器（按 schema 渲染）============
 function openEditor(mode, index) {
   if (!SCHEMA) return;
@@ -253,6 +299,15 @@ function openEditor(mode, index) {
     } else if (def.type === 'textarea') {
       input = document.createElement('textarea');
       input.value = value;
+    } else if (def.type === 'number') {
+      // 数字：文本框 + 实时限制（最多 2 位小数，可为整数）
+      input = document.createElement('input');
+      input.type = 'text';
+      input.inputMode = 'decimal';
+      input.autocomplete = 'off';
+      input.placeholder = def.placeholder || '最多 2 位小数，如 12 或 12.34';
+      input.value = (value === '' || value === undefined || value === null) ? '' : String(value);
+      attachNumberGuard(input, def);
     } else {
       input = document.createElement('input');
       input.type = def.type;
@@ -291,8 +346,23 @@ async function submitEditor(e) {
   const inputs = form.querySelectorAll('input, select, textarea');
   for (const el of inputs) {
     const field = el.dataset.field;
+    const def = schema[field] || {};
     let val = el.value;
-    if (el.type === 'number' && val !== '') val = Number(val);
+
+    if (def.type === 'number') {
+      const raw = String(val == null ? '' : val).trim();
+      if (raw === '') {
+        val = '';
+      } else if (!NUM_PATTERN.test(raw)) {
+        toast(`「${field}」格式不对：只能填数字，且小数点后最多 2 位`, 'error');
+        el.focus();
+        return;
+      } else {
+        // 去掉多余的前导 0（如 007 → 7），保留 0 与 0.xx
+        val = Number(raw);
+      }
+    }
+
     newRow[field] = val;
   }
 
