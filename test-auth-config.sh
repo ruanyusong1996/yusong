@@ -90,7 +90,18 @@ code -c $JA -X POST -H 'Content-Type: application/json' -d '{"role":"admin","pas
 t "还原配置 200" "$(code -b $JA -X PUT -H 'Content-Type: application/json' --data-binary @/tmp/config-backup.json $BASE/api/config)" "200"
 t "配置已还原" "$(cur -b $J $BASE/api/config | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"]["pageTitle"])')" "海底捞集团工会工作数据看板"
 
-echo "【10】存储诊断 / 备份恢复 / 防误清空"
+echo "【10】敏感文件不可被直接下载（静态白名单）"
+for f in server-data.json server-config.json server-auth.json server.js package.json README.md DEPLOY_GUIDE.md seed-data.json seed-config.json test-e2e-cdp.js backups/; do
+  t "未登录 GET /$f → 404" "$(code $BASE/$f)" "404"
+done
+t "看板会话 GET /server-data.json → 404" "$(code -b $J $BASE/server-data.json)" "404"
+t "后台会话 GET /server-auth.json → 404" "$(code -b $JA $BASE/server-auth.json)" "404"
+t "login.html 仍公开" "$(code $BASE/login.html)" "200"
+t "styles.css 仍公开" "$(code $BASE/styles.css)" "200"
+t "admin.css 仍公开" "$(code $BASE/admin.css)" "200"
+t "lib/echarts.min.js 仍公开" "$(code $BASE/lib/echarts.min.js)" "200"
+
+echo "【11】存储诊断 / 备份恢复 / 防误清空"
 t "health 含 persistent 标记" "$(cur $BASE/api/health | grep -o '"persistent":true' | head -1)" '"persistent":true'
 t "health 含 storageMode" "$(cur $BASE/api/health | grep -c '"storageMode"')" "1"
 t "未登录读 /api/storage 应 401" "$(code $BASE/api/storage)" "401"

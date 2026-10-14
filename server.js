@@ -45,7 +45,7 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -717,6 +717,17 @@ const VIEW_ONLY_FILES = new Set([
 ]);
 const ADMIN_ONLY_FILES = new Set(['/admin.html', '/admin.js']);
 
+/**
+ * 允许匿名访问的静态资源白名单。
+ * 其余一切（server-data.json / server-config.json / server-auth.json / server.js /
+ * package.json / README.md / DEPLOY_GUIDE.md / backups/…）一律 404 ——
+ * 否则密码保护等于形同虚设：任何人直接 GET /server-data.json 就能把数据拿走。
+ */
+const PUBLIC_STATIC_FILES = new Set([
+  '/login.html', '/styles.css', '/admin.css', '/favicon.ico', '/robots.txt',
+]);
+const PUBLIC_STATIC_PREFIXES = ['/lib/'];
+
 function redirectToLogin(res, role, nextPath) {
   const next = nextPath && nextPath !== '/' ? `&next=${encodeURIComponent(nextPath)}` : '';
   res.redirect(302, `/login.html?role=${role}${next}`);
@@ -735,6 +746,16 @@ app.use((req, res, next) => {
   }
   if (isViewer(s)) return next();
   return redirectToLogin(res, 'dashboard', p);
+});
+
+// 静态资源白名单门禁：不在白名单里的路径直接 404，避免敏感文件被直接下载
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+  const p = req.path;
+  if (VIEW_ONLY_FILES.has(p) || ADMIN_ONLY_FILES.has(p)) return next();   // 上面已做过角色校验
+  if (PUBLIC_STATIC_FILES.has(p)) return next();
+  if (PUBLIC_STATIC_PREFIXES.some(pre => p.startsWith(pre))) return next();
+  return res.status(404).json({ error: 'not found' });
 });
 
 app.use(express.static(ROOT, {
