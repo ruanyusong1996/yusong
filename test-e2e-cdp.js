@@ -196,9 +196,9 @@ class CDP {
     await cdp.evalJs('[...document.querySelectorAll("#modules-root .module-title")].map(e=>e.textContent.trim())'),
     ['一、组织建设情况', '二、走访慰问情况', '三、员工活动情况', '四、经费收支情况']);
 
-  t('模块内列宽栅格正确 (span 5/7, 6/6, 12/6/6, 12/12)',
+  t('模块内列宽栅格正确 (span 5/7, 6/6, 12/6/6, 12/12/12)',
     await cdp.evalJs(`[...document.querySelectorAll("#modules-root .mod-col")].map(c=>c.style.gridColumn)`),
-    ['span 5', 'span 7', 'span 6', 'span 6', 'span 12', 'span 6', 'span 6', 'span 12', 'span 12']);
+    ['span 5', 'span 7', 'span 6', 'span 6', 'span 12', 'span 6', 'span 6', 'span 12', 'span 12', 'span 12']);
 
   t('指标卡片总数 = 13',
     await cdp.evalJs('document.querySelectorAll("#modules-root [data-metric]").length'), 13);
@@ -221,8 +221,9 @@ class CDP {
   t('★公式指标 平均每会结余 = 3.34 万元', metricVals['fund-per-org'], '3.34');
 
   // 图表
-  t('图表块 4 个且 ECharts 已绘制 canvas',
-    await cdp.evalJs('[...document.querySelectorAll("#modules-root canvas")].length'), 4);
+  // 4 张普通图 + v1.3 新增的瀑布（桥梁）图
+  t('图表块 5 个且 ECharts 已绘制 canvas',
+    await cdp.evalJs('[...document.querySelectorAll("#modules-root canvas")].length'), 5);
 
   // 色板容错：历史脏数据把色板存成过字符串，"#" 这种非法颜色必须被过滤掉，
   // 否则 ECharts 抛 addColorStop 异常、整张图渲染不出来。
@@ -321,10 +322,10 @@ class CDP {
   t('分区标题 = ①~⑧', cfgCounts.sectionTitles.map(s => s.slice(0, 1)),
     ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧']);
   t('指标编辑行 = 13', cfgCounts.metricRows, 13);
-  t('图表编辑行 = 4', cfgCounts.chartRows, 4);
+  t('图表编辑行 = 5（含新增的瀑布图）', cfgCounts.chartRows, 5);
   t('统计表编辑行 = 3', cfgCounts.tableRows, 3);
   t('模块卡片 = 4', cfgCounts.modCards, 4);
-  t('列卡片 = 9', cfgCounts.colCards, 9);
+  t('列卡片 = 10（经费模块新增了桥梁图那一列）', cfgCounts.colCards, 10);
   t('有「+ 添加模块」按钮', cfgCounts.addModBtn, true);
   t('有「+ 新增指标」按钮', cfgCounts.addMetricBtn, true);
   t('主题色选择器 = 9 个', cfgCounts.themeColorInputs, 9);
@@ -627,6 +628,178 @@ class CDP {
     await cdp.evalJs('document.getElementById("page-title").textContent').then(s => /海底捞集团工会工作数据看板/.test(s)), true);
   t('还原后模块数回到 4',
     await cdp.evalJs('document.querySelectorAll("#modules-root > section").length'), 4);
+
+  // ==================== E2. 经费瀑布（桥梁）图 ====================
+  console.log('\n【E2】经费瀑布（桥梁）图（v1.3 新增）');
+  await gotoDashboard();
+  const wf = await cdp.evalJs(`(async()=>{
+    const cfg = await (await fetch('/api/config',{credentials:'include'})).json();
+    const data = await (await fetch('/api/data',{credentials:'include'})).json();
+    const ch = (cfg.charts||[]).find(c=>c.type==='waterfall');
+    if(!ch) return { hasChart:false };
+    const rows = window.ConfigEngine.waterfallRows(data[ch.sheet], ch);
+    const r2 = v => Math.round(v*100)/100;
+    return {
+      hasChart:true, sheet: ch.sheet, stageField: ch.stageField, field: ch.field,
+      unions: rows.length,
+      balanceSum: r2(rows.reduce((s,r)=>s+r.balance,0)),
+      anyManual: rows.some(r=>r.manual),
+      sample: rows.slice(0,2).map(r=>[r.name, r2(r.initial), r2(r.income), r2(r.expense), r2(r.balance)]),
+    };
+  })()`);
+  console.log('    ', JSON.stringify(wf));
+  t('配置里有瀑布（桥梁）图定义', wf.hasChart, true);
+  t('瀑布图数据表 = 05-经费瀑布', wf.sheet, '05-经费瀑布');
+  t('阶段字段 = 收支类型（期初/入账/支出/结余）', wf.stageField, '收支类型');
+  t('每个工会单独一行（7 个工会）', wf.unions, 7);
+  t('结余合计 66.75 万元（与看板「当前结余」指标一致）', wf.balanceSum, 66.75);
+  t('结余默认自动计算（不是手工指定）', wf.anyManual, false);
+
+  const wfDom = await cdp.evalJs(`(function(){
+    const secs=[...document.querySelectorAll('#modules-root > section')];
+    const fund=secs[secs.length-1];
+    const titles=[...fund.querySelectorAll('.sub-card-title')].map(e=>e.textContent);
+    const areas=[...fund.querySelectorAll('.chart-area')];
+    return { titles, areaCount: areas.length, lastH: areas.length? parseInt(areas[areas.length-1].style.height,10) : 0 };
+  })()`);
+  console.log('    经费模块块标题:', JSON.stringify(wfDom.titles));
+  t('经费模块最下方新增了「桥梁图」块', wfDom.titles.some(x => /桥梁图/.test(x)), true);
+  t('经费模块共 2 张图（结余柱 + 桥梁图）', wfDom.areaCount, 2);
+  t('桥梁图高度按工会数自动撑开（≥400px）', wfDom.lastH >= 400, true);
+
+  const wfSeries = await cdp.evalJs(`(function(){
+    const areas=[...document.querySelectorAll('#modules-root .chart-area')];
+    const el=areas[areas.length-1];
+    const inst = echarts.getInstanceByDom(el);
+    if(!inst) return {ok:false};
+    const o = inst.getOption();
+    return {
+      ok:true,
+      names:o.series.map(s=>s.name).filter(n=>String(n).indexOf('__ph')!==0),
+      cats:(o.yAxis[0].data||[]).length,
+    };
+  })()`);
+  t('桥梁图真的画出了 期初/入账/支出/结余 四段', JSON.stringify(wfSeries.names), JSON.stringify(['期初', '入账', '支出', '结余']));
+  t('桥梁图 y 轴 = 工会数', wfSeries.cats, 7);
+
+  // ---------- 后台：瀑布表可见可编辑 ----------
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表');
+  t('瀑布表在后台可见（14 行 = 7 工会 × 期初/入账）',
+    await cdp.evalJs('document.querySelectorAll("#admin-table tbody tr").length'), 14);
+  const wfBtns = await cdp.evalJs(`(function(){
+    const vis = el => !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none';
+    return { union: vis(document.getElementById('btn-add-union')), editor: vis(document.getElementById('btn-fund-editor')) };
+  })()`);
+  t('「＋ 新增工会组织」按钮在该表可见', wfBtns.union, true);
+  t('「🌉 瀑布图编辑」按钮在该表可见', wfBtns.editor, true);
+
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器打开');
+  const ed = await cdp.evalJs(`(function(){
+    const content=document.getElementById('mini-modal-content');
+    const cs=getComputedStyle(content);
+    return {
+      unions: document.querySelectorAll('.wf-union-list li[data-wf-union]').length,
+      items: document.querySelectorAll('#wf-rows [data-wf-item]').length,
+      overflowY: cs.overflowY,
+      canScroll: content.scrollHeight >= content.clientHeight,
+      addIncome: !!document.querySelector('[data-wf-add="入账"]'),
+      addExpense: !!document.querySelector('[data-wf-add="支出"]'),
+      sumText: (document.querySelector('.wf-sum')||{}).textContent.replace(/\\s+/g,' ').trim() || '',
+    };
+  })()`);
+  console.log('    ', JSON.stringify(ed));
+  t('编辑器列出全部 7 个工会', ed.unions, 7);
+  t('选中工会的科目行可编辑（期初/入账各 1 行）', ed.items, 2);
+  t('提供「＋添加入账项 / ＋添加支出项」', ed.addIncome && ed.addExpense, true);
+  t('实时给出 期初＋入账－支出＝结余', /期初[\s\S]*入账[\s\S]*支出[\s\S]*结余/.test(ed.sumText), true);
+  t('弹窗内容区可滚动（overflow-y:auto，不会被裁掉）', ed.overflowY, 'auto');
+
+  // 加一个支出项并保存 → 结余应该相应减少
+  const balBefore = await cdp.evalJs(`(function(){const m=/＝ 结余 ([\\d.]+)/.exec(document.querySelector('.wf-sum').textContent); return m?Number(m[1]):null;})()`);
+  await cdp.evalJs(`document.querySelector('[data-wf-add="支出"]').click()`);
+  await cdp.evalJs(`(function(){
+    const rows=document.querySelectorAll('#wf-rows [data-wf-item][data-wf-stage="支出"]');
+    const last=rows[rows.length-1];
+    last.querySelector('[data-wf-name]').value='E2E测试支出';
+    last.querySelector('[data-wf-amt]').value='1.5';
+    return true;
+  })()`);
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1500);
+  const wfSaved = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    const mine = rows.filter(r=>String(r['经费项目']||'').indexOf('E2E')>=0);
+    const CE = window.ConfigEngine;
+    const all = CE.waterfallRows(d['05-经费瀑布'], {groupBy:'工会名称', stageField:'收支类型', field:'金额（万元）'});
+    return { total: rows.length, added: mine.length, stage: mine[0] ? mine[0]['收支类型'] : '', unions: all.length };
+  })()`);
+  console.log('    ', JSON.stringify(wfSaved), '改前结余=', balBefore);
+  t('新增的支出项已落库', wfSaved.added, 1);
+  t('新增行的阶段 = 支出', wfSaved.stage, '支出');
+  t('瀑布表行数 14 → 15', wfSaved.total, 15);
+
+  // ---------- 后台：新增工会组织 ----------
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(2)');
+  await cdp.evalJs(`document.getElementById('btn-add-union').click()`);
+  await waitFor('!!document.getElementById("u-name")', '新增工会弹窗');
+  await cdp.evalJs(`(function(){
+    document.getElementById('u-name').value='E2E测试工会';
+    document.getElementById('u-initial').value='3.5';
+    document.getElementById('u-amount').value='2';
+    return true;
+  })()`);
+  const formVals = await cdp.evalJs(`(function(){
+    const g = id => { const el = document.getElementById(id); return el ? el.value : '(缺失)'; };
+    return { name: g('u-name'), initial: g('u-initial'), amount: g('u-amount'), proj: g('u-proj') };
+  })()`);
+  console.log('    表单填写值:', JSON.stringify(formVals));
+  t('表单里的入账金额已填好', formVals.amount, '2');
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1600);
+  const afterAdd = await cdp.evalJs(`(function(){
+    return {
+      stillOpen: !document.getElementById('mini-modal').classList.contains('hidden'),
+      toast: (document.getElementById('toast')||{}).textContent || '',
+    };
+  })()`);
+  console.log('    提交后:', JSON.stringify(afterAdd));
+  t('新增工会弹窗已关闭（流程走完）', afterAdd.stillOpen, false);
+  const added = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const wf = d['05-经费瀑布'].rows.filter(r=>r['工会名称']==='E2E测试工会');
+    const org = d['01-组织建设'].rows.filter(r=>r['工会名称']==='E2E测试工会');
+    return { wf: wf.length, org: org.length, stages: wf.map(r=>r['收支类型']), amounts: wf.map(r=>r['金额（万元）']) };
+  })()`);
+  console.log('    ', JSON.stringify(added));
+  t('新增工会写进瀑布表（期初 + 入账 两行）', added.wf, 2);
+  t('新增工会的阶段正确', JSON.stringify(added.stages), JSON.stringify(['期初', '入账']));
+  t('新增工会的金额按填写值入库', JSON.stringify(added.amounts), JSON.stringify([3.5, 2]));
+  t('新增工会同步登记到「一、组织建设」表', added.org, 1);
+
+  await gotoDashboard();
+  const unionsNow = await cdp.evalJs(`(async()=>{
+    const cfg = await (await fetch('/api/config',{credentials:'include'})).json();
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const ch = (cfg.charts||[]).find(c=>c.type==='waterfall');
+    return window.ConfigEngine.waterfallRows(d[ch.sheet], ch).length;
+  })()`);
+  t('新工会在看板瀑布图上立刻出现（7 → 8 行）', unionsNow, 8);
+
+  // 清理测试数据（E2E 用的是临时数据副本，但保持干净便于反复跑）
+  await gotoAdmin();
+  const cleaned = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const hit = v => String(v||'').indexOf('E2E') >= 0;
+    d['05-经费瀑布'].rows = d['05-经费瀑布'].rows.filter(r=>!hit(r['工会名称']) && !hit(r['经费项目']));
+    d['01-组织建设'].rows = d['01-组织建设'].rows.filter(r=>!hit(r['工会名称']));
+    const p = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+    return p.status;
+  })()`);
+  t('清理 E2E 测试数据 200', cleaned, 200);
 
   console.log('\n【F】运行期 JS 异常');
   console.log('    捕获异常数:', consoleErrs.length, consoleErrs.slice(0, 3));

@@ -339,6 +339,221 @@
   }
 
   // ---------------------------------------------------------------------
+  // 瀑布（桥梁）图：期初 → 入账 → 支出 → 结余
+  // ---------------------------------------------------------------------
+  // 数据表是「长表」：一行 = 某个工会的某个科目
+  //   工会名称 | 收支类型(期初/入账/支出/结余) | 经费项目 | 金额（万元）
+  // 同一个收支类型可以有多行（多个入账项目、多个支出项目），自动累加。
+  // 「结余」类型的行是手工指定值；没有这类行时结余 = 期初 + 入账 - 支出。
+
+  const DEFAULT_STAGES = { initial: '期初', income: '入账', expense: '支出', balance: '结余' };
+
+  /** 阶段名 → initial / income / expense / balance；认不出来返回 null */
+  function stageOf(value, def) {
+    const s = String(value == null ? '' : value).trim();
+    if (!s) return null;
+    const st = Object.assign({}, DEFAULT_STAGES, (def && def.stages) || {});
+    if (s === st.initial) return 'initial';
+    if (s === st.income) return 'income';
+    if (s === st.expense) return 'expense';
+    if (s === st.balance) return 'balance';
+    // 兜底：用户可能填「年初金额」「上年结转」「收入」等近义词
+    if (/期初|年初|上年结转|结转/.test(s)) return 'initial';
+    if (/入账|收入|拨入|反拨/.test(s)) return 'income';
+    if (/支出|开支/.test(s)) return 'expense';
+    if (/结余|余额/.test(s)) return 'balance';
+    return null;
+  }
+
+  /**
+   * 汇总成每个工会一行：{ name, initial, income, expense, balance, manual, items }
+   * manual=true 表示结余是手工指定的（表里有「结余」类型的行）
+   */
+  function waterfallRows(sheet, def) {
+    if (!sheet) return [];
+    const headers = sheet.headers || [];
+    const rows = filterRows(sheet, def && def.where);
+    const groupBy = (def && def.groupBy) || '工会名称';
+    const stageField = (def && def.stageField) || '收支类型';
+    const itemField = (def && def.itemField) || '经费项目';
+    const valueField = (def && def.field) || '金额（万元）';
+    const map = new Map();
+
+    rows.forEach(r => {
+      const stage = stageOf(pick(r, headers, stageField), def);
+      if (!stage) return;
+      const key = String(pick(r, headers, groupBy) == null ? '' : pick(r, headers, groupBy)).trim() || '（空）';
+      const num = toNum(pick(r, headers, valueField));
+      const v = num === null ? 0 : num;
+      let o = map.get(key);
+      if (!o) {
+        o = { name: key, initial: 0, income: 0, expense: 0, balanceManual: null, items: [] };
+        map.set(key, o);
+      }
+      if (stage === 'initial') o.initial += v;
+      else if (stage === 'income') o.income += v;
+      else if (stage === 'expense') o.expense += Math.abs(v);
+      else if (stage === 'balance') o.balanceManual = (o.balanceManual || 0) + v;
+      o.items.push({ stage, item: String(pick(r, headers, itemField) == null ? '' : pick(r, headers, itemField)), value: v });
+    });
+
+    let list = [...map.values()].map(o => {
+      const auto = o.initial + o.income - o.expense;
+      return {
+        name: o.name,
+        initial: o.initial,
+        income: o.income,
+        expense: o.expense,
+        balance: o.balanceManual === null ? auto : o.balanceManual,
+        manual: o.balanceManual !== null,
+        items: o.items,
+      };
+    });
+
+    switch (def && def.sortBy) {
+      case 'valueDesc': list.sort((a, b) => b.balance - a.balance); break;
+      case 'valueAsc': list.sort((a, b) => a.balance - b.balance); break;
+      case 'nameAsc': list.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh')); break;
+      default: break;
+    }
+    if (def && def.limit && def.limit > 0) list = list.slice(0, def.limit);
+    return list;
+  }
+
+  /** 从「经费收支」明细表推导出瀑布长表需要的行（补齐缺失的瀑布表时用） */
+  const YUAN = 10000;
+  function deriveWaterfallRows(sheet, groupField) {
+    if (!sheet) return [];
+    const headers = sheet.headers || [];
+    const gf = groupField || (headers.indexOf('工会名称') >= 0 ? '工会名称' : '工会全称');
+    const map = new Map();
+    (sheet.rows || []).forEach(r => {
+      const key = String(pick(r, headers, gf) == null ? '' : pick(r, headers, gf)).trim()
+        || String(pick(r, headers, '工会全称') == null ? '' : pick(r, headers, '工会全称')).trim();
+      if (!key) return;
+      let o = map.get(key);
+      if (!o) { o = { initial: 0, income: 0, expense: 0, items: [] }; map.set(key, o); }
+      const type = String(pick(r, headers, '收支类型') == null ? '' : pick(r, headers, '收支类型'));
+      const proj = String(pick(r, headers, '经费项目') == null ? '' : pick(r, headers, '经费项目')) || '未分类';
+
+      const initYuan = toNum(pick(r, headers, '年初金额'));
+      const initWan = toNum(pick(r, headers, '年初金额（万元）'));
+      if (initWan !== null) o.initial += initWan;
+      else if (initYuan !== null) o.initial += initYuan / YUAN;
+
+      const outYuan = toNum(pick(r, headers, '支出金额'));
+      const outWan = toNum(pick(r, headers, '支出金额（万元）'));
+      if (outWan !== null) o.expense += Math.abs(outWan);
+      else if (outYuan !== null) o.expense += Math.abs(outYuan) / YUAN;
+
+      const balWan = toNum(pick(r, headers, '当前结余（万元）'));
+      const balYuan = toNum(pick(r, headers, '当前结余（元）'));
+      let bal = balWan !== null ? balWan : (balYuan !== null ? balYuan / YUAN : null);
+      if (bal !== null && /收入|拨入|反拨/.test(type)) {
+        o.income += bal;
+        o.items.push({ stage: 'income', item: proj, value: bal });
+      }
+    });
+
+    const out = [];
+    [...map.entries()].forEach(([name, o]) => {
+      // 保留 4 位小数：与经费收支表「当前结余（万元）」的精度一致，
+      // 否则各工会四舍五入后的合计会和看板上的「当前结余」指标差出几分钱。
+      const r4 = v => Math.round(v * 10000) / 10000;
+      // 期初行总是生成（哪怕为 0），方便后台直接改金额，不用先新增行
+      out.push({ 工会名称: name, 收支类型: '期初', 经费项目: '上年结转', '金额（万元）': r4(o.initial), 备注: '由经费收支表年初金额自动带入，请核对' });
+      if (o.income) {
+        const byItem = new Map();
+        o.items.filter(i => i.stage === 'income').forEach(i => {
+          byItem.set(i.item, (byItem.get(i.item) || 0) + i.value);
+        });
+        [...byItem.entries()].forEach(([item, v]) => {
+          out.push({ 工会名称: name, 收支类型: '入账', 经费项目: item, '金额（万元）': r4(v), 备注: '由经费收支表收入记录自动带入' });
+        });
+      }
+      if (o.expense) out.push({ 工会名称: name, 收支类型: '支出', 经费项目: '经费支出', '金额（万元）': r4(o.expense), 备注: '由经费收支表支出金额自动带入' });
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------------
+  // 配置升级：把「默认模板里新增的东西」补进已有配置，不动用户改过的部分
+  // ---------------------------------------------------------------------
+  /**
+   * 场景：线上配置是用户改过的，新版本给模板加了图表/指标/模块块，
+   * 直接替换会丢用户设置，不补则新功能永远看不见。
+   * 这里只做「加法」：id 不存在才追加。
+   * 返回 { cfg, added } —— added 是人类可读的变更清单，便于写日志/提示。
+   */
+  function mergeAdditions(stored, seed) {
+    const added = [];
+    if (!seed || typeof seed !== 'object') return { cfg: stored, added };
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return { cfg: clone(seed), added: ['（无有效配置，直接使用默认模板）'] };
+
+    const cfg = clone(stored);
+    const has = (arr, id) => (arr || []).some(x => x && x.id === id);
+
+    // 标量分组：缺哪个键补哪个键（用户改过的键保持原值）
+    ['text', 'theme', 'layout'].forEach(group => {
+      if (!seed[group] || typeof seed[group] !== 'object') return;
+      cfg[group] = cfg[group] && typeof cfg[group] === 'object' ? cfg[group] : {};
+      Object.keys(seed[group]).forEach(k => {
+        if (cfg[group][k] === undefined) {
+          cfg[group][k] = clone(seed[group][k]);
+          added.push(`${group}.${k}`);
+        }
+      });
+    });
+
+    // 列表：metrics / charts / tables
+    ['metrics', 'charts', 'tables'].forEach(coll => {
+      if (!Array.isArray(seed[coll])) return;
+      if (!Array.isArray(cfg[coll])) cfg[coll] = [];
+      seed[coll].forEach(item => {
+        if (!item || !item.id) return;
+        if (!has(cfg[coll], item.id)) {
+          cfg[coll].push(clone(item));
+          added.push(`${coll}: ${item.id}`);
+        }
+      });
+    });
+
+    // 模块 / 列 / 块：只补缺失的，不重排用户已有的
+    if (Array.isArray(seed.modules)) {
+      if (!Array.isArray(cfg.modules)) cfg.modules = [];
+      seed.modules.forEach(sm => {
+        if (!sm || !sm.id) return;
+        let m = cfg.modules.find(x => x && x.id === sm.id);
+        if (!m) {
+          cfg.modules.push(clone(sm));
+          added.push(`模块: ${sm.title || sm.id}`);
+          return;
+        }
+        if (!Array.isArray(m.columns)) m.columns = [];
+        (sm.columns || []).forEach(sc => {
+          if (!sc || !sc.id) return;
+          let c = m.columns.find(x => x && x.id === sc.id);
+          if (!c) {
+            m.columns.push(clone(sc));
+            added.push(`模块「${sm.title || sm.id}」新增列 ${sc.id}`);
+            return;
+          }
+          if (!Array.isArray(c.blocks)) c.blocks = [];
+          (sc.blocks || []).forEach(sb => {
+            if (!sb || !sb.id) return;
+            if (!c.blocks.some(x => x && x.id === sb.id)) {
+              c.blocks.push(clone(sb));
+              added.push(`模块「${sm.title || sm.id}」新增内容块 ${sb.id}`);
+            }
+          });
+        });
+      });
+    }
+
+    return { cfg, added };
+  }
+
+  // ---------------------------------------------------------------------
   // 数字格式化
   // ---------------------------------------------------------------------
   function fmtNum(v, decimals) {
@@ -359,5 +574,9 @@
     groupRows, groupTable, crossTable, buildTable,
     fmtNum,
     OPS, OP_LABEL, AGG_LABEL,
+    // 瀑布（桥梁）图
+    DEFAULT_STAGES, stageOf, waterfallRows, deriveWaterfallRows,
+    // 配置升级（把模板新增项补进已有配置）
+    mergeAdditions,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

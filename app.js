@@ -370,8 +370,136 @@ function renderChartBlock(block) {
 
   let inst = charts[block.id];
   if (!inst) { inst = charts[block.id] = echarts.init(el); }
+
+  // 瀑布（桥梁）图：每个工会占一行，行内依次是 期初 → 入账 → 支出 → 结余
+  if (def.type === 'waterfall') {
+    const list = E.waterfallRows(sheet, def);
+    const barWidth = Number(def.barWidth) || 10;
+    // 每个工会 4 根柱并排，行高必须容得下 4 根柱 + 间距，否则柱子会挤在一起看不出「桥」
+    const need = Math.max(Number(def.height) || 320, list.length * (barWidth * 4 + 26) + 90);
+    if (Math.abs(parseFloat(el.style.height || 0) - need) > 2) {
+      el.style.height = need + 'px';
+      inst.resize();
+    }
+    inst.setOption(buildWaterfallOption(def, list), true);
+    return;
+  }
+
   const list = E.groupRows(sheet, def);
   inst.setOption(buildChartOption(def, list), true);
+}
+
+/** 瀑布（桥梁）图的配色：期初 / 入账 / 支出 / 结余 */
+function waterfallColors(def) {
+  const p = palette();
+  const custom = Array.isArray(def.colors) ? def.colors.filter(isColor) : [];
+  if (custom.length >= 4) return custom.slice(0, 4);
+  return [
+    custom[0] || p[0] || '#4DD8FF',   // 期初
+    custom[1] || '#10B981',           // 入账（增）
+    custom[2] || '#EF4444',           // 支出（减）
+    custom[3] || '#8B5CF6',           // 结余
+  ];
+}
+
+/**
+ * 瀑布（桥梁）图 option。
+ * 每个工会 = y 轴上一个类目（一行），行内 4 根横柱并排：
+ *   期初(0→期初) | 入账(期初→期初+入账) | 支出(结余→结余+支出) | 结余(0→结余)
+ * 「悬浮」增量柱用一根透明占位柱 + 一根实体柱堆叠实现。
+ */
+function buildWaterfallOption(def, list) {
+  const T = theme();
+  const c = waterfallColors(def);
+  const decimals = typeof def.decimals === 'number' ? def.decimals : 2;
+  const fmt = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(decimals);
+  const labelShow = !(def.label && def.label.show === false);
+  const bw = Number(def.barWidth) || 10;
+  const legendShow = !!(def.legend && def.legend.show);
+  const legendPos = (def.legend && def.legend.position) || 'bottom';
+
+  const names = list.map(x => x.name);
+  const initial = list.map(x => x.initial);
+  const income = list.map(x => x.income);
+  const expense = list.map(x => x.expense);
+  const balance = list.map(x => x.balance);
+
+  // sign：入账标 "+"、支出标 "−"，一眼看出是增还是减
+  const barSeries = (name, color, data, stack, showLabel, sign) => ({
+    name,
+    type: 'bar',
+    stack,
+    barWidth: bw,
+    itemStyle: { color, borderRadius: [0, 2, 2, 0] },
+    label: {
+      show: labelShow && showLabel,
+      position: 'right',
+      color: T.text || '#E6EEFF',
+      fontSize: 11,
+      // 0 值不标数字：否则每行都会多出几个 "0.00"，把真正有金额的柱子淹掉
+      formatter: (p) => (Math.abs(Number(p.value)) < 1e-9 ? '' : (sign || '') + fmt(p.value)),
+    },
+    data,
+  });
+
+  // 透明占位柱：只用来把实体柱「抬」到正确的起点，不参与提示与图例
+  const placeholder = (data, stack) => ({
+    name: '__ph_' + stack,
+    type: 'bar',
+    stack,
+    barWidth: bw,
+    silent: true,
+    itemStyle: { color: 'transparent' },
+    emphasis: { itemStyle: { color: 'transparent' } },
+    tooltip: { show: false },
+    data,
+  });
+
+  return {
+    color: c,
+    tooltip: Object.assign(tooltipStyle(), {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params) => {
+        const arr = Array.isArray(params) ? params : [params];
+        const row = list[arr.length ? arr[0].dataIndex : -1];
+        if (!row) return '';
+        const groups = { initial: [], income: [], expense: [], balance: [] };
+        (row.items || []).forEach(i => { if (groups[i.stage]) groups[i.stage].push(`${i.item || '未命名'} ${fmt(i.value)}`); });
+        const itemLines = [
+          ['入账', groups.income], ['支出', groups.expense], ['期初', groups.initial], ['结余', groups.balance],
+        ].filter(g => g[1].length).map(g => `${g[0]}：${g[1].join('、')}`).slice(0, 3);
+        return `<b>${escapeHtml(row.name)}</b><br/>`
+          + `期初 ${fmt(row.initial)} 万元<br/>`
+          + `入账 +${fmt(row.income)}　支出 −${fmt(row.expense)}<br/>`
+          + `<b>结余 ${fmt(row.balance)}</b> 万元${row.manual ? '（手工指定）' : '（自动计算）'}`
+          + (itemLines.length ? '<br/>' + itemLines.map(escapeHtml).join('<br/>') : '');
+      },
+    }),
+    legend: legendShow ? {
+      show: true,
+      data: ['期初', '入账', '支出', '结余'],
+      bottom: legendPos === 'bottom' ? 0 : undefined,
+      top: legendPos === 'top' ? 0 : undefined,
+      textStyle: { color: T.text || '#E6EEFF', fontSize: 12 },
+      itemWidth: 12, itemHeight: 12,
+    } : { show: false },
+    grid: { left: 10, right: 60, top: 24, bottom: legendShow && legendPos === 'bottom' ? 40 : 20, containLabel: true },
+    xAxis: Object.assign({ type: 'value', name: (def.axis && def.axis.yName) || '' }, axisStyle(0), {
+      nameTextStyle: { color: T.muted || '#7E93BD' },
+    }),
+    yAxis: Object.assign({ type: 'category', data: names, inverse: true }, axisStyle(0), {
+      axisLabel: { color: T.muted || '#7E93BD', fontSize: 12, interval: 0 },
+    }),
+    series: [
+      barSeries('期初', c[0], initial, 'st1', true, ''),
+      placeholder(initial, 'st2'),
+      barSeries('入账', c[1], income, 'st2', true, '+'),
+      placeholder(balance, 'st3'),
+      barSeries('支出', c[2], expense, 'st3', true, '−'),
+      barSeries('结余', c[3], balance, 'st4', true, ''),
+    ],
+  };
 }
 
 function buildChartOption(def, list) {

@@ -5,7 +5,9 @@
  * 离线（双击 file:// 打开）时以此为初始值，存 localStorage。
  */
 window.SEED_CONFIG = {
-  version: 1,
+  // 模板版本：服务端启动时用它判断「要不要把新增的图表/模块块补进线上已有配置」。
+  // 加了新功能就 +1，用户自己删掉的东西不会被反复加回来。
+  version: 2,
 
   /* ---------- 文字 ---------- */
   text: {
@@ -166,6 +168,22 @@ window.SEED_CONFIG = {
       height: 300, barWidth: 36, wrapLabels: false, decimals: 2,
       detail: { sheet: '04-经费收支', groupField: '工会名称' },
     },
+    /* --- 瀑布（桥梁）图：每个工会一行，期初 → 入账 → 支出 → 结余 --- *
+     * 数据表是「长表」：一行 = 某工会的一个科目（05-经费瀑布）
+     *   工会名称 | 收支类型(期初/入账/支出/结余) | 经费项目 | 金额（万元）
+     * 结余默认 = 期初 + 入账 − 支出；表里若填了「结余」类型的行，则按手工值显示。
+     */
+    {
+      id: 'chart-fund-bridge', visible: true, title: '',
+      type: 'waterfall', sheet: '05-经费瀑布', groupBy: '工会名称',
+      stageField: '收支类型', itemField: '经费项目', field: '金额（万元）', agg: 'sum',
+      colors: [],
+      legend: { show: true, position: 'bottom' },
+      label: { show: true, formatter: '{c}' },
+      axis: { rotate: 0, yName: '万元' },
+      height: 420, barWidth: 10, decimals: 2, sortBy: 'valueDesc',
+      detail: { sheet: '05-经费瀑布', groupField: '工会名称' },
+    },
   ],
 
   /* ---------- 统计表 ---------- */
@@ -278,6 +296,16 @@ window.SEED_CONFIG = {
           id: 'c-fund-2', width: 12,
           blocks: [
             { id: 'b-fund-chart', type: 'chart', visible: true, title: '各工会经费结余（万元）', refId: 'chart-fund-bar' },
+          ],
+        },
+        {
+          id: 'c-fund-3', width: 12,
+          blocks: [
+            {
+              id: 'b-fund-bridge', type: 'chart', visible: true,
+              title: '各工会经费「期初 → 入账 → 支出 → 结余」桥梁图（万元）',
+              refId: 'chart-fund-bridge',
+            },
           ],
         },
       ],

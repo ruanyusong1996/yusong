@@ -68,6 +68,7 @@
     <button class="tab-btn" data-tab="02-走访慰问">二、走访慰问 <span class="tab-badge" id="badge-02-走访慰问">0</span></button>
     <button class="tab-btn" data-tab="03-员工活动">三、员工活动 <span class="tab-badge" id="badge-03-员工活动">0</span></button>
     <button class="tab-btn" data-tab="04-经费收支">四、经费收支 <span class="tab-badge" id="badge-04-经费收支">0</span></button>
+    <button class="tab-btn" data-tab="05-经费瀑布">五、经费瀑布 <span class="tab-badge" id="badge-05-经费瀑布">0</span></button>
     <button class="tab-btn" data-tab="__config">🎨 看板配置</button>
     <button class="tab-btn" data-tab="__security">🔒 安全设置</button>
   </nav>
@@ -80,6 +81,8 @@
       <div class="tab-toolbar">
         <input type="text" class="admin-search" id="admin-search" placeholder="搜索当前表（按任意字段）" />
         <button class="btn btn-primary" id="btn-add">＋ 新增记录</button>
+        <button class="btn btn-primary hidden" id="btn-add-union" title="新成立工会时用它，会同时登记到组织建设表与瀑布表">＋ 新增工会组织</button>
+        <button class="btn btn-ghost hidden" id="btn-fund-editor" title="按工会编辑期初 / 入账 / 支出 / 结余">🌉 瀑布图编辑</button>
         <button class="btn btn-ghost" id="btn-schema" title="增删改字段、编辑下拉选项">⚙ 列管理</button>
         <span class="tab-info" id="schema-summary">—</span>
         <span class="tab-info" id="tab-info">—</span>

@@ -1,18 +1,26 @@
 /* ===== 后台管理逻辑 ===== */
 
-const SHEETS = ['01-组织建设', '02-走访慰问', '03-员工活动', '04-经费收支'];
+const SHEETS = ['01-组织建设', '02-走访慰问', '03-员工活动', '04-经费收支', '05-经费瀑布'];
 const SHEET_TITLES = {
   '01-组织建设': '工会组织建设',
   '02-走访慰问': '员工走访慰问',
   '03-员工活动': '员工活动',
   '04-经费收支': '工会经费收支',
+  '05-经费瀑布': '经费瀑布（桥梁）',
 };
 const SHEET_ICON = {
   '01-组织建设': '🏛️',
   '02-走访慰问': '🤝',
   '03-员工活动': '🎉',
   '04-经费收支': '💰',
+  '05-经费瀑布': '🌉',
 };
+
+/** 瀑布（桥梁）图专用表：一行 = 某个工会的一个科目（期初/入账/支出/结余） */
+const FUND_SHEET = '05-经费瀑布';
+/** 该表固定使用的列名（后台编辑与看板渲染都按这套来） */
+const FUND_COLS = { union: '工会名称', full: '工会全称', stage: '收支类型', item: '经费项目', amount: '金额（万元）', note: '备注' };
+const FUND_STAGES = ['期初', '入账', '支出', '结余'];
 
 let currentTab = SHEETS[0];
 let DATA = null;
@@ -357,9 +365,13 @@ async function submitEditor(e) {
 
     if (def.type === 'number') {
       const raw = String(val == null ? '' : val).trim();
+      // 没动过的字段不校验格式：历史数据（如经费瀑布表由经费收支表自动带入的金额）
+      // 可能带着 4 位小数，用户只是改同一行的其它格子，不该被拦下来。
+      const original = mode === 'edit' ? sheet.rows[editIndex][field] : undefined;
+      const untouched = original !== undefined && original !== null && String(original) === raw;
       if (raw === '') {
         val = '';
-      } else if (!NUM_PATTERN.test(raw)) {
+      } else if (!NUM_PATTERN.test(raw) && !untouched) {
         toast(`「${field}」格式不对：只能填数字，且小数点后最多 2 位`, 'error');
         el.focus();
         return;
@@ -630,9 +642,10 @@ function showMiniModal(title, htmlBody, onConfirm, onShow) {
     const root = document.getElementById('mini-modal-content');
 
     // 带表单网格的弹窗（指标 / 图表 / 统计表）字段多，用宽版两列排版；
+    // 瀑布图编辑器有左右分栏，同样需要宽版；
     // 「新增列 / 编辑列 / 选择指标」这类内容少，保持窄版。
     const panel = modal.querySelector('.mini-panel');
-    if (panel) panel.classList.toggle('mini-panel-wide', !!root.querySelector('.form-grid'));
+    if (panel) panel.classList.toggle('mini-panel-wide', !!root.querySelector('.form-grid, .wf-wrap'));
 
     // 弹窗刚打开时把内容区滚到顶部，避免上次滚到底部的位置被继承
     root.scrollTop = 0;
@@ -691,6 +704,12 @@ function bindTabs() {
       secPanel.classList.add('hidden');
       dataPanel.classList.remove('hidden');
       document.getElementById('admin-search').value = '';
+      // 「新增工会组织」在组织建设表与瀑布表都要有（新成立工会两边都得体现）；
+      // 「瀑布图编辑」只有瀑布表需要。
+      const addUnionBtn = document.getElementById('btn-add-union');
+      const fundBtn = document.getElementById('btn-fund-editor');
+      if (addUnionBtn) addUnionBtn.classList.toggle('hidden', currentTab !== '01-组织建设' && currentTab !== FUND_SHEET);
+      if (fundBtn) fundBtn.classList.toggle('hidden', currentTab !== FUND_SHEET);
       SCHEMA = DashboardStore.getSchema(currentTab);
       renderTable();
       updateSchemaIndicator();
@@ -702,6 +721,8 @@ function bindToolbar() {
   document.getElementById('admin-search').addEventListener('input', renderTable);
   document.getElementById('btn-add').addEventListener('click', () => openEditor('add'));
   document.getElementById('btn-schema').addEventListener('click', openSchemaEditor);
+  document.getElementById('btn-add-union').addEventListener('click', () => promptAddUnion());
+  document.getElementById('btn-fund-editor').addEventListener('click', () => openFundEditor());
 
   document.querySelector('#admin-table').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-action]');
@@ -961,11 +982,13 @@ const CHART_FIELDS = [
   { k: 'id', label: 'ID（英文，唯一）', t: 'text' },
   { k: 'title', label: '图表标题（留空则不显示）', t: 'text' },
   { k: 'visible', label: '显示', t: 'checkbox' },
-  { k: 'type', label: '图表类型', t: 'select', opts: [['pie', '饼图'], ['doughnut', '环形图'], ['bar', '柱状图'], ['hbar', '条形图(横)'], ['line', '折线图']].map(([v, l]) => ({ v, l })) },
+  { k: 'type', label: '图表类型', t: 'select', opts: [['pie', '饼图'], ['doughnut', '环形图'], ['bar', '柱状图'], ['hbar', '条形图(横)'], ['line', '折线图'], ['waterfall', '瀑布/桥梁图（期初→入账→支出→结余）']].map(([v, l]) => ({ v, l })) },
   { k: 'sheet', label: '数据表', t: 'sheet' },
-  { k: 'groupBy', label: '分组字段（横轴/饼块）', t: 'field', sheetOf: 'sheet' },
+  { k: 'groupBy', label: '分组字段（横轴/饼块；瀑布图=每个工会一行）', t: 'field', sheetOf: 'sheet' },
   { k: 'agg', label: '统计方式', t: 'select', opts: [['count', '计数'], ['sum', '求和'], ['avg', '平均'], ['max', '最大值'], ['min', '最小值']].map(([v, l]) => ({ v, l })) },
-  { k: 'field', label: '统计字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'field', label: '统计字段（瀑布图=金额列）', t: 'field', sheetOf: 'sheet' },
+  { k: 'stageField', label: '【瀑布图】阶段字段（值含 期初/入账/支出/结余）', t: 'field', sheetOf: 'sheet' },
+  { k: 'itemField', label: '【瀑布图】项目字段（经费项目名称）', t: 'field', sheetOf: 'sheet' },
   { k: 'height', label: '高度（px）', t: 'number' },
   { k: 'barWidth', label: '柱宽（px）', t: 'number' },
   { k: 'decimals', label: '数值小数位', t: 'number' },
@@ -1629,6 +1652,12 @@ async function promptEditChart(idx) {
     if (!next.id) { toast('请填写 ID', 'error'); return false; }
     if ((CFG.charts || []).some((c, i) => c.id === next.id && i !== idx)) { toast('ID 已存在', 'error'); return false; }
     next.colors = csvToArr(got['colors']);
+    // 瀑布图必需的三个列：没填就给出常用默认值，避免图表一片空白
+    if (next.type === 'waterfall') {
+      if (!next.stageField) next.stageField = '收支类型';
+      if (!next.itemField) next.itemField = '经费项目';
+      if (!next.field) next.field = '金额（万元）';
+    }
     if (!next.detail) next.detail = {};
     CFG = collectConfigFromPanel();
     if (isNew) CFG.charts.push(next); else CFG.charts[idx] = next;
@@ -1643,7 +1672,9 @@ async function promptEditChart(idx) {
       const list = fieldOptions(sheetSel.value);
       sel.innerHTML = ['', ...list].map(s => `<option value="${escapeHtml(s)}" ${s === keep ? 'selected' : ''}>${s ? escapeHtml(s) : '（不指定）'}</option>`).join('');
     };
-    if (sheetSel) sheetSel.addEventListener('change', () => { refill('groupBy', ''); refill('field', ''); refill('detail.groupField', ''); });
+    if (sheetSel) sheetSel.addEventListener('change', () => {
+      refill('groupBy', ''); refill('field', ''); refill('stageField', ''); refill('itemField', ''); refill('detail.groupField', '');
+    });
   });
 }
 
@@ -1754,6 +1785,420 @@ function crossColHtml(c, i) {
     </div>`;
 }
 
+// ============ 经费瀑布（桥梁）图 ============
+// 数据表「05-经费瀑布」是长表：一行 = 某工会的一个科目。
+// 后台提供：① 逐行编辑（通用表格）② 按工会的「瀑布图编辑」弹窗 ③ 新增工会组织。
+
+function fundSheetRows() {
+  const s = DATA && DATA[FUND_SHEET];
+  return s && Array.isArray(s.rows) ? s.rows : [];
+}
+
+/** 把长表行按工会聚合成编辑用的模型。认不出阶段/工会名为空的行放进 orphans，保存时原样带回（绝不静默丢数据） */
+function fundBuildModel() {
+  const model = {};
+  const orphans = [];
+  fundSheetRows().forEach(r => {
+    const name = String(r[FUND_COLS.union] == null ? '' : r[FUND_COLS.union]).trim();
+    if (!name) { orphans.push(r); return; }
+    if (!model[name]) {
+      model[name] = { name, full: String(r[FUND_COLS.full] || ''), initial: [], income: [], expense: [], manual: null };
+    }
+    const m = model[name];
+    if (!m.full) m.full = String(r[FUND_COLS.full] || '');
+    const stage = String(r[FUND_COLS.stage] || (r['收支类型'] || '')).trim();
+    const amount = Number(r[FUND_COLS.amount]);
+    const item = {
+      item: String(r[FUND_COLS.item] == null ? '' : r[FUND_COLS.item]),
+      amount: Number.isFinite(amount) ? amount : 0,
+    };
+    if (stage === '期初') m.initial.push(item);
+    else if (stage === '入账') m.income.push(item);
+    else if (stage === '支出') m.expense.push(item);
+    else if (stage === '结余') m.manual = item.amount;
+    else orphans.push(r);
+  });
+  // 没有期初行的工会补一条空的，界面上才有的改
+  Object.keys(model).forEach(k => { if (!model[k].initial.length) model[k].initial.push({ item: '上年结转', amount: 0 }); });
+  return { model, orphans };
+}
+
+function fundBalanceOf(m) {
+  const sum = arr => arr.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const initial = sum(m.initial), income = sum(m.income), expense = sum(m.expense);
+  return {
+    initial, income, expense,
+    balance: m.manual === null ? initial + income - expense : m.manual,
+  };
+}
+
+function fundModelToRows(model, orphans) {
+  const rows = [];
+  Object.keys(model).forEach(name => {
+    const m = model[name];
+    const push = (stage, it) => rows.push({
+      [FUND_COLS.union]: name,
+      [FUND_COLS.full]: m.full || '',
+      [FUND_COLS.stage]: stage,
+      [FUND_COLS.item]: it.item || '未命名',
+      [FUND_COLS.amount]: Number.isFinite(Number(it.amount)) ? Number(it.amount) : 0,
+      [FUND_COLS.note]: '',
+    });
+    (m.initial || []).forEach(it => push('期初', it));
+    (m.income || []).forEach(it => push('入账', it));
+    (m.expense || []).forEach(it => push('支出', it));
+    if (m.manual !== null) push('结余', { item: '手工指定', amount: m.manual });
+  });
+  // 认不出阶段的行原样带回（比如用户填了自定义收支类型），不能悄悄删掉
+  (orphans || []).forEach(r => rows.push(r));
+  return rows;
+}
+
+/** 科目行（期初/入账/支出）的编辑行 HTML */
+function fundItemRowHtml(stage, it, i) {
+  const cls = stage === '入账' ? 'wf-in' : stage === '支出' ? 'wf-out' : 'wf-init';
+  return `
+    <tr class="wf-item ${cls}" data-wf-item="${i}" data-wf-stage="${escapeHtml(stage)}">
+      <td class="wf-stage">${escapeHtml(stage)}</td>
+      <td><input type="text" class="wf-item-name" data-wf-name value="${escapeHtml(it.item || '')}" placeholder="项目名称" /></td>
+      <td><input type="text" inputmode="decimal" class="wf-item-amt" data-wf-amt value="${it.amount === 0 ? '0' : (it.amount === undefined ? '' : it.amount)}" placeholder="0" /></td>
+      <td><button class="mini-btn danger" type="button" data-wf-del>×</button></td>
+    </tr>`;
+}
+
+function fundUnionPanelHtml(m) {
+  const b = fundBalanceOf(m);
+  const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '0.00');
+  const rows = []
+    .concat((m.initial || []).map((it, i) => fundItemRowHtml('期初', it, i)))
+    .concat((m.income || []).map((it, i) => fundItemRowHtml('入账', it, i)))
+    .concat((m.expense || []).map((it, i) => fundItemRowHtml('支出', it, i)))
+    .join('');
+  return `
+    <div class="wf-main-head">
+      <label class="wf-field">工会名称<input type="text" id="wf-union-name" value="${escapeHtml(m.name)}" /></label>
+      <label class="wf-field grow">工会全称<input type="text" id="wf-union-full" value="${escapeHtml(m.full || '')}" /></label>
+      <button class="mini-btn danger" type="button" id="wf-del-union">删除该工会</button>
+    </div>
+    <table class="wf-table">
+      <thead><tr><th style="width:70px">阶段</th><th>项目</th><th style="width:120px">金额（万元）</th><th style="width:40px"></th></tr></thead>
+      <tbody id="wf-rows">${rows || '<tr class="wf-empty"><td colspan="4">（还没有科目，点下面按钮添加）</td></tr>'}</tbody>
+    </table>
+    <div class="wf-add-row">
+      <button class="mini-btn" type="button" data-wf-add="入账">＋ 添加入账项</button>
+      <button class="mini-btn" type="button" data-wf-add="支出">＋ 添加支出项</button>
+      <button class="mini-btn" type="button" data-wf-add="期初">＋ 添加期初项</button>
+    </div>
+    <div class="wf-sum">
+      <span>期初 <b>${fmt(b.initial)}</b></span>
+      <span>＋ 入账 <b class="wf-in-text">${fmt(b.income)}</b></span>
+      <span>－ 支出 <b class="wf-out-text">${fmt(b.expense)}</b></span>
+      <span>＝ 结余 <b class="wf-bal-text">${fmt(b.balance)}</b> 万元</span>
+      <label class="wf-manual"><input type="checkbox" id="wf-manual" ${m.manual !== null ? 'checked' : ''}/> 手工指定结余</label>
+      <input type="text" inputmode="decimal" id="wf-balance" class="wf-item-amt" value="${m.manual === null ? '' : m.manual}" ${m.manual === null ? 'disabled' : ''} />
+    </div>
+    <p class="cfg-hint">结余默认自动计算（期初＋入账－支出）。勾「手工指定」可强行填写（例如账实不符需要手工平账）。金额单位：万元，最多 2 位小数。</p>
+  `;
+}
+
+/**
+ * 结余合计交叉核对：瀑布表各工会结余之和 vs「04-经费收支」的当前结余之和。
+ * 两张表都能录入金额，口径不一致时看板上会出现「两处数字打架」，这里先提醒。
+ */
+function fundCrossCheckHtml(model) {
+  const sum = Object.keys(model).reduce((s, k) => s + (Number(fundBalanceOf(model[k]).balance) || 0), 0);
+  const num = v => {
+    const s = String(v == null ? '' : v).trim();
+    if (s === '') return null;
+    const n = Number(s.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+  const fund = DATA && DATA['04-经费收支'];
+  let ref = null;
+  if (fund && Array.isArray(fund.rows)) {
+    const H = fund.headers || [];
+    const hasCol = H.indexOf('当前结余（万元）') >= 0 || H.indexOf('当前结余（元）') >= 0;
+    if (hasCol) {
+      ref = fund.rows.reduce((s, r) => {
+        const w = num(DashboardStore.pickValue(r, H, '当前结余（万元）'));
+        if (w !== null) return s + w;
+        const y = num(DashboardStore.pickValue(r, H, '当前结余（元）'));
+        return s + (y !== null ? y / 10000 : 0);
+      }, 0);
+    }
+  }
+  const f2 = v => Number(v).toFixed(2);
+  if (ref === null) {
+    return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 万元</span>`;
+  }
+  const diff = sum - ref;
+  const bad = Math.abs(diff) > 0.011;
+  return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 万元</span>`
+    + `<span>「04-经费收支」结余合计 <b>${f2(ref)}</b> 万元</span>`
+    + (bad
+      ? `<span class="wf-diff">⚠ 相差 ${f2(Math.abs(diff))} 万元，建议核对（否则看板上两张图的数字会不一致）</span>`
+      : `<span class="wf-ok">✓ 与经费收支表一致</span>`);
+}
+
+function fundSideHtml(model, active) {
+  const names = Object.keys(model);
+  if (!names.length) return '<ul class="wf-union-list"><li class="wf-empty">（还没有工会，点「＋ 新增工会」）</li></ul>';
+  return `<ul class="wf-union-list">${names.map(n => {
+    const b = fundBalanceOf(model[n]);
+    return `<li data-wf-union="${escapeHtml(n)}" class="${n === active ? 'active' : ''}">
+      <span class="wf-union-name">${escapeHtml(n)}</span>
+      <span class="wf-union-bal">${Number(b.balance).toFixed(2)}</span>
+    </li>`;
+  }).join('')}</ul>`;
+}
+
+/** 「🌉 瀑布图编辑」：按工会编辑期初 / 入账项 / 支出项 / 结余 */
+async function openFundEditor() {
+  if (!DATA || !DATA[FUND_SHEET]) { toast('未找到「05-经费瀑布」表，请刷新页面', 'error'); return; }
+  const { model, orphans } = fundBuildModel();
+  let active = Object.keys(model)[0] || '';
+
+  const shell = `
+    <div class="wf-wrap">
+      <div class="wf-side">
+        <div class="wf-side-head"><b>工会组织</b><button class="mini-btn" type="button" id="wf-add-union">＋ 新增工会</button></div>
+        <div id="wf-side-list">${fundSideHtml(model, active)}</div>
+      </div>
+      <div class="wf-main" id="wf-main">${active ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>'}</div>
+    </div>
+    <div class="wf-cross" id="wf-cross">${fundCrossCheckHtml(model)}</div>`;
+
+  /** 把当前面板里的输入写回 model（切换工会 / 保存前都要先做，否则改动会丢） */
+  const collect = (root) => {
+    if (!active || !model[active]) return;
+    const m = model[active];
+    const nameEl = root.querySelector('#wf-union-name');
+    const fullEl = root.querySelector('#wf-union-full');
+    if (nameEl) {
+      const nn = String(nameEl.value || '').trim();
+      if (nn && nn !== m.name) {           // 改名：把整组搬到新名字下
+        model[nn] = m; delete model[m.name]; m.name = nn; active = nn;
+      }
+    }
+    if (fullEl) m.full = String(fullEl.value || '');
+
+    const groups = { 期初: [], 入账: [], 支出: [] };
+    root.querySelectorAll('#wf-rows [data-wf-item]').forEach(tr => {
+      const stage = tr.dataset.wfStage;
+      const item = tr.querySelector('[data-wf-name]').value.trim();
+      const raw = tr.querySelector('[data-wf-amt]').value.trim();
+      const amt = raw === '' ? 0 : Number(raw);
+      if (!groups[stage]) return;
+      groups[stage].push({ item: item || '未命名', amount: Number.isFinite(amt) ? amt : 0 });
+    });
+    m.initial = groups['期初'] || [];
+    m.income = groups['入账'] || [];
+    m.expense = groups['支出'] || [];
+
+    const manualCb = root.querySelector('#wf-manual');
+    const balEl = root.querySelector('#wf-balance');
+    if (manualCb && manualCb.checked) {
+      const raw = String(balEl.value || '').trim();
+      const v = raw === '' ? 0 : Number(raw);
+      m.manual = Number.isFinite(v) ? v : 0;
+    } else {
+      m.manual = null;
+    }
+  };
+
+  const repaint = (root) => {
+    root.querySelector('#wf-side-list').innerHTML = fundSideHtml(model, active);
+    const main = root.querySelector('#wf-main');
+    main.innerHTML = active && model[active] ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>';
+    main.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, {}));
+    const cross = root.querySelector('#wf-cross');
+    if (cross) cross.innerHTML = fundCrossCheckHtml(model);
+  };
+
+  await showMiniModal('经费瀑布（桥梁）图编辑', shell, async (root) => {
+    collect(root);
+    // 校验：工会名不能为空 / 重名已由 collect 处理
+    const bad = Object.keys(model).filter(n => !n.trim());
+    if (bad.length) { toast('工会名称不能为空', 'error'); return false; }
+    setSync('syncing');
+    try {
+      await DashboardStore.updateSheet(FUND_SHEET, fundModelToRows(model, orphans));
+      toast('已保存，看板瀑布图会实时刷新');
+      setTimeout(() => refreshSyncBadge(), 600);
+      return true;
+    } catch (e) {
+      console.error(e);
+      toast('保存失败：' + (e.message || e), 'error');
+      setSync('error', '保存失败');
+      return false;
+    }
+  }, (root) => {
+    repaint(root);
+
+    root.addEventListener('click', async (ev) => {
+      // 切换工会
+      const li = ev.target.closest('[data-wf-union]');
+      if (li) {
+        collect(root);
+        active = li.dataset.wfUnion;
+        repaint(root);
+        return;
+      }
+      // 删除科目行
+      const del = ev.target.closest('[data-wf-del]');
+      if (del) { del.closest('[data-wf-item]').remove(); return; }
+      // 添加科目行
+      const add = ev.target.closest('[data-wf-add]');
+      if (add) {
+        const stage = add.dataset.wfAdd;
+        const host = root.querySelector('#wf-rows');
+        host.querySelectorAll('.wf-empty').forEach(x => x.remove());
+        const n = host.querySelectorAll('[data-wf-item]').length;
+        host.insertAdjacentHTML('beforeend', fundItemRowHtml(stage, { item: '', amount: 0 }, n));
+        host.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, {}));
+        const last = host.querySelector(`[data-wf-item="${n}"] [data-wf-name]`);
+        if (last) last.focus();
+        return;
+      }
+      // 删除整个工会
+      if (ev.target.closest('#wf-del-union')) {
+        if (!active) return;
+        const ok = await confirmDialog(`确认删除工会「${active}」的全部经费科目？该工会会从瀑布图上消失（不影响其它数据表）`, '删除工会');
+        if (!ok) return;
+        delete model[active];
+        active = Object.keys(model)[0] || '';
+        repaint(root);
+        return;
+      }
+      // 新增工会
+      if (ev.target.closest('#wf-add-union')) {
+        const added = await promptAddUnion();
+        if (added) {
+          // 新工会已经写进 DATA 了，把它并进当前正在编辑的模型（不清掉未保存的改动）
+          const fresh = fundBuildModel().model;
+          Object.keys(fresh).forEach(k => { if (!model[k]) model[k] = fresh[k]; });
+          active = added;
+          repaint(root);
+        }
+        return;
+      }
+    });
+
+    root.addEventListener('change', (ev) => {
+      if (ev.target.id !== 'wf-manual') return;
+      const bal = root.querySelector('#wf-balance');
+      if (!bal) return;
+      bal.disabled = !ev.target.checked;
+      if (ev.target.checked) {
+        collect(root);
+        const m = model[active];
+        bal.value = m ? Number(fundBalanceOf(m).balance).toFixed(2) : '';
+        bal.focus();
+      }
+    });
+  });
+}
+
+/** 「＋ 新增工会组织」：一次把工会登记进组织建设表 + 瀑布表，看板上立刻可见 */
+async function promptAddUnion() {
+  const orgSchema = (DashboardStore.getSchema('01-组织建设') || {}).schema || {};
+  const levelOpts = (orgSchema['工会级别'] && orgSchema['工会级别'].options) || ['一级工会', '二级工会', '三级工会'];
+  const statusOpts = (orgSchema['组建状态'] && orgSchema['组建状态'].options) || ['已组建', '筹建中'];
+  // 入账项目不该把「上年结转」列进来（那是期初用的）
+  const projOpts = ((DashboardStore.BUILTIN_SCHEMA[FUND_SHEET]['经费项目'] || {}).options || ['上级工会反拨'])
+    .filter(o => o !== '上年结转');
+  const defaultProj = projOpts.indexOf('上级工会反拨') >= 0 ? '上级工会反拨' : projOpts[0];
+
+  const html = `
+    <div class="form-grid">
+      <label class="form-field">工会名称（简称，瀑布图上显示的那个）<input type="text" id="u-name" placeholder="如：汕头二店工会" /></label>
+      <label class="form-field">工会全称<input type="text" id="u-full" placeholder="选填" /></label>
+      <label class="form-field">依托公司<input type="text" id="u-company" placeholder="选填，默认同工会全称" /></label>
+      <label class="form-field">工会级别<select id="u-level">${levelOpts.map(o => `<option value="${escapeHtml(o)}" ${o === '三级工会' ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
+      <label class="form-field">组建状态<select id="u-status">${statusOpts.map(o => `<option value="${escapeHtml(o)}" ${o === '已组建' ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
+      <label class="form-field">期初金额（万元）<input type="text" inputmode="decimal" id="u-initial" value="0" /></label>
+      <label class="form-field">首笔入账项目<select id="u-proj">${projOpts.map(o => `<option value="${escapeHtml(o)}" ${o === defaultProj ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
+      <label class="form-field">首笔入账金额（万元，可留空）<input type="text" inputmode="decimal" id="u-amount" value="" /></label>
+      <label class="form-field check full"><input type="checkbox" id="u-to-org" checked /> 同时登记到「一、组织建设」表（工会总数 / 组建率等指标会同步更新）</label>
+      <label class="form-field check full"><input type="checkbox" id="u-to-fund" checked /> 同时登记到「05-经费瀑布」表（瀑布图上立刻出现这一行）</label>
+    </div>
+    <p class="cfg-hint">金额单位：万元，最多 2 位小数。建好后可随时在「🌉 瀑布图编辑」里补录更多入账/支出项目。</p>`;
+
+  let created = null;
+  await showMiniModal('新增工会组织', html, async (root) => {
+    const name = String(root.querySelector('#u-name').value || '').trim();
+    if (!name) { toast('请填写工会名称', 'error'); return false; }
+    const full = String(root.querySelector('#u-full').value || '').trim();
+    const company = String(root.querySelector('#u-company').value || '').trim() || full || name;
+    const level = root.querySelector('#u-level').value;
+    const status = root.querySelector('#u-status').value;
+    const initialRaw = String(root.querySelector('#u-initial').value || '').trim();
+    const amountRaw = String(root.querySelector('#u-amount').value || '').trim();
+    const proj = root.querySelector('#u-proj').value;
+    const toOrg = root.querySelector('#u-to-org').checked;
+    const toFund = root.querySelector('#u-to-fund').checked;
+
+    if (initialRaw && !NUM_PATTERN.test(initialRaw)) { toast('期初金额最多 2 位小数', 'error'); return false; }
+    if (amountRaw && !NUM_PATTERN.test(amountRaw)) { toast('入账金额最多 2 位小数', 'error'); return false; }
+
+    // 重名检查（瀑布表里已经有这个工会就没必要再建）
+    const exists = fundSheetRows().some(r => String(r[FUND_COLS.union] || '').trim() === name);
+    if (toFund && exists) { toast(`工会「${name}」已经在瀑布表里了`, 'error'); return false; }
+
+    setSync('syncing');
+    try {
+      // ⚠️ 必须一次提交：addRow 每调一次就 PUT 一整份数据并触发 SSE 广播，
+      // 广播回来前端会重新 GET 一次数据 —— 连续 addRow 会互相覆盖，
+      // 表现就是「只写进去了第一行，后面的凭空消失」。
+      // 所以这里在内存里把要加的行都准备好，最后 replaceAll 一次落库。
+      const next = JSON.parse(JSON.stringify(DashboardStore.getData() || {}));
+      if (toOrg && next['01-组织建设'] && Array.isArray(next['01-组织建设'].rows)) {
+        next['01-组织建设'].rows.push({
+          工会名称: name, 依托公司: company, 工会主席: '', 职工人数: '',
+          组建状态: status, 工会级别: level, 备注: '由「新增工会组织」创建',
+        });
+      }
+      if (toFund && next[FUND_SHEET] && Array.isArray(next[FUND_SHEET].rows)) {
+        const base = { [FUND_COLS.union]: name, [FUND_COLS.full]: full || '', [FUND_COLS.note]: '新建工会' };
+        const fundRows = [];
+        if (initialRaw !== '') {
+          fundRows.push(Object.assign({}, base, {
+            [FUND_COLS.stage]: '期初', [FUND_COLS.item]: '上年结转', [FUND_COLS.amount]: Number(initialRaw),
+          }));
+        }
+        if (amountRaw !== '') {
+          fundRows.push(Object.assign({}, base, {
+            [FUND_COLS.stage]: '入账', [FUND_COLS.item]: proj, [FUND_COLS.amount]: Number(amountRaw),
+          }));
+        }
+        if (!fundRows.length) {
+          fundRows.push(Object.assign({}, base, {
+            [FUND_COLS.stage]: '期初', [FUND_COLS.item]: '上年结转', [FUND_COLS.amount]: 0,
+          }));
+        }
+        fundRows.forEach(r => next[FUND_SHEET].rows.push(r));
+      }
+      await DashboardStore.replaceAll(next);
+      created = name;
+      toast('已新增工会组织「' + name + '」，看板已同步');
+      setTimeout(() => refreshSyncBadge(), 600);
+      return true;
+    } catch (e) {
+      console.error(e);
+      toast('新增失败：' + (e.message || e), 'error');
+      setSync('error', '新增失败');
+      return false;
+    }
+  }, (root) => {
+    ['#u-initial', '#u-amount'].forEach(sel => {
+      const el = root.querySelector(sel);
+      if (el) attachNumberGuard(el, {});
+    });
+  });
+  if (created) refreshAll();
+  return created;
+}
+
 async function saveConfigFromPanel() {
   try {
     CFG = collectConfigFromPanel();
@@ -1804,7 +2249,15 @@ function validateConfig(cfg) {
   if (ids.some(x => !x)) errs.push('有指标未填写 ID');
   const dup = ids.filter((x, i) => ids.indexOf(x) !== i);
   if (dup.length) errs.push('指标 ID 重复：' + [...new Set(dup)].join('、'));
-  (cfg.charts || []).forEach(c => { if (!c.id) errs.push('有图表未填写 ID'); });
+  (cfg.charts || []).forEach(c => {
+    if (!c.id) errs.push('有图表未填写 ID');
+    // 瀑布（桥梁）图缺了阶段/金额列就画不出任何柱子，直接拦住
+    if (c.type === 'waterfall') {
+      if (!c.groupBy) errs.push(`瀑布图「${c.id}」未选择分组字段（一般是「工会名称」，决定图上每一行）`);
+      if (!c.field) errs.push(`瀑布图「${c.id}」未选择金额字段（一般是「金额（万元）」）`);
+      if (!c.stageField) errs.push(`瀑布图「${c.id}」未选择阶段字段（值应为 期初 / 入账 / 支出 / 结余）`);
+    }
+  });
   (cfg.tables || []).forEach(t => {
     if (!t.id) errs.push('有统计表未填写 ID');
     if (t.type === 'group' && !t.groupBy) errs.push(`统计表「${t.title || t.id}」未选择分组字段`);

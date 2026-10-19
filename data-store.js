@@ -48,7 +48,7 @@
   const CONFIG_KEY = 'hdj_dashboard_config_v1';
   const CLIENT_ID_KEY = 'hdj_client_id';
   const API_TIMEOUT_MS = 2000;
-  const REQUIRED_KEYS = ['01-组织建设', '02-走访慰问', '03-员工活动', '04-经费收支'];
+  const REQUIRED_KEYS = ['01-组织建设', '02-走访慰问', '03-员工活动', '04-经费收支', '05-经费瀑布'];
 
   // 默认字段定义（兼容老数据：首次加载时若 DATA 没 schema，就用这套补齐）
   const BUILTIN_SCHEMA = {
@@ -94,6 +94,21 @@
       '当前结余（万元）': { type: 'number' },
       '事由摘要': { type: 'textarea', full: true },
       '经办人': { type: 'text' },
+      '备注': { type: 'textarea', full: true },
+    },
+    // 瀑布（桥梁）图的专用长表：一行 = 某个工会的一个科目
+    // 收支类型决定这一行进「期初 / 入账 / 支出 / 结余」哪一段；
+    // 结余默认自动算（期初+入账-支出），只有填了「结余」类型的行才按手工值走。
+    '05-经费瀑布': {
+      '工会名称': { type: 'text', required: true },
+      '工会全称': { type: 'text', full: true },
+      '收支类型': { type: 'select', options: ['期初', '入账', '支出', '结余'], required: true },
+      '经费项目': {
+        type: 'select',
+        options: ['上年结转', '上级工会反拨', '会员会费', '其他收入', '活动支出', '慰问支出', '培训支出', '其他支出'],
+        required: true,
+      },
+      '金额（万元）': { type: 'number' },
       '备注': { type: 'textarea', full: true },
     },
   };

@@ -593,6 +593,98 @@
 .mini-btn.danger:hover { background: rgba(239, 68, 68, 0.15); }
 .mini-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #9FB4DA; white-space: nowrap; }
 
+/* ---------- 经费瀑布（桥梁）图编辑器 ---------- */
+.wf-wrap {
+  display: flex; gap: 14px; align-items: flex-start;
+  min-height: 320px;
+}
+.wf-side {
+  width: 230px; flex: 0 0 230px;
+  border: 1px solid rgba(77, 216, 255, 0.2);
+  border-radius: 4px; background: rgba(20, 34, 74, 0.45);
+  display: flex; flex-direction: column;
+}
+.wf-side-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid rgba(77, 216, 255, 0.18);
+  font-size: 12.5px; color: #9FB4DA;
+}
+/* 工会列表可能很长：必须能自己滚，否则会把「＋新增工会」顶出可视区 */
+.wf-union-list {
+  list-style: none; margin: 0; padding: 6px;
+  max-height: 46vh; overflow-y: auto; overscroll-behavior: contain;
+}
+.wf-union-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 9px; border-radius: 4px; cursor: pointer;
+  font-size: 12.5px; color: #C7D6F5; border: 1px solid transparent;
+}
+.wf-union-list li:hover { background: rgba(77, 216, 255, 0.1); }
+.wf-union-list li.active {
+  background: rgba(77, 216, 255, 0.16);
+  border-color: rgba(77, 216, 255, 0.45);
+  color: #fff;
+}
+.wf-union-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-union-bal { font-size: 11.5px; color: #4DD8FF; font-variant-numeric: tabular-nums; }
+.wf-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.wf-main-head { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.wf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9FB4DA; }
+.wf-field.grow { flex: 1 1 220px; }
+.wf-field input[type="text"] {
+  background: rgba(8, 16, 37, 0.75); border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #E6EEFF; border-radius: 4px; padding: 6px 9px; font-size: 12.5px;
+  font-family: inherit; outline: none; min-width: 160px;
+}
+.wf-field input:focus { border-color: #4DD8FF; }
+.wf-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.wf-table th {
+  text-align: left; padding: 6px 8px; color: #5FE0FF; font-weight: 600;
+  border-bottom: 1px solid rgba(77, 216, 255, 0.25); font-size: 12px;
+}
+.wf-table td { padding: 5px 8px; border-bottom: 1px solid rgba(77, 216, 255, 0.08); }
+.wf-table input[type="text"] {
+  width: 100%; box-sizing: border-box;
+  background: rgba(8, 16, 37, 0.75); border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #E6EEFF; border-radius: 4px; padding: 5px 8px; font-size: 12.5px;
+  font-family: inherit; outline: none;
+}
+.wf-table input:focus { border-color: #4DD8FF; }
+.wf-table input:disabled { opacity: 0.45; }
+.wf-item-amt { text-align: right; font-variant-numeric: tabular-nums; }
+.wf-stage { color: #9FB4DA; white-space: nowrap; }
+.wf-item.wf-in .wf-stage { color: #10B981; }
+.wf-item.wf-out .wf-stage { color: #EF4444; }
+.wf-item.wf-init .wf-stage { color: #4DD8FF; }
+.wf-add-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.wf-sum {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: rgba(20, 34, 74, 0.6); border: 1px solid rgba(77, 216, 255, 0.2);
+  border-radius: 4px; padding: 9px 12px; font-size: 12.5px; color: #9FB4DA;
+}
+.wf-sum b { color: #E6EEFF; font-variant-numeric: tabular-nums; }
+.wf-in-text { color: #10B981 !important; }
+.wf-out-text { color: #EF4444 !important; }
+.wf-bal-text { color: #4DD8FF !important; }
+.wf-manual { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.wf-manual input[type="checkbox"] { width: auto; }
+.wf-sum input#wf-balance { width: 110px; text-align: right; }
+.wf-empty td, .wf-union-list .wf-empty { color: #7E93BD; text-align: center; padding: 10px; }
+.wf-cross {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin-top: 12px; padding: 9px 12px; border-radius: 4px;
+  background: rgba(8, 16, 37, 0.55); border: 1px solid rgba(77, 216, 255, 0.16);
+  font-size: 12.5px; color: #9FB4DA;
+}
+.wf-cross b { color: #E6EEFF; font-variant-numeric: tabular-nums; }
+.wf-diff { color: #F59E0B; }
+.wf-ok { color: #10B981; }
+@media (max-width: 860px) {
+  .wf-wrap { flex-direction: column; }
+  .wf-side { width: 100%; flex: none; }
+  .wf-union-list { max-height: 180px; }
+}
+
 /* 模块卡片 */
 .cfg-mod-card {
   border: 1px solid rgba(77, 216, 255, 0.25);

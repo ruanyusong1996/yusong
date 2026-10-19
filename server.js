@@ -42,10 +42,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// 复用前端那套纯函数引擎（公式解析、瀑布聚合、配置升级），避免服务端/前端算法分叉
+require(path.join(__dirname, 'config-engine.js'));
+const CE = globalThis.ConfigEngine || {};
+
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.2.4';
+const APP_VERSION = '1.3.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -300,20 +304,85 @@ function countRows(data) {
   }, 0);
 }
 
+/**
+ * 补齐「新版本才有的数据表」。
+ * 为什么需要：线上数据是老版本落盘的，新版本加了一张表（如 05-经费瀑布），
+ * 不补的话看板就永远看不到这个功能，用户也没法在后台编辑它。
+ * 只增不删：已存在的表一律不动。
+ * 其中瀑布表会先尝试用「04-经费收支」的真实数据推导，保证与现有账目一致。
+ */
+function ensureSheets(data) {
+  const seed = readJsonSafe(SEED_FILE);
+  if (!seed || !data || typeof data !== 'object') return data;
+  let changed = false;
+
+  Object.keys(seed).forEach(k => {
+    if (k === '_meta') return;
+    if (!data[k]) { data[k] = JSON.parse(JSON.stringify(seed[k])); changed = true; }
+  });
+
+  // 瀑布表：优先按现有经费明细推导（这样工会名单跟用户实际数据一致）
+  if (!data['05-经费瀑布'] && data['04-经费收支'] && typeof CE.deriveWaterfallRows === 'function') {
+    const objs = CE.deriveWaterfallRows(data['04-经费收支'], '工会名称');
+    const headers = (seed['05-经费瀑布'] && seed['05-经费瀑布'].headers)
+      || ['序号', '工会名称', '工会全称', '收支类型', '经费项目', '金额（万元）', '备注'];
+    const H = data['04-经费收支'].headers || [];
+    const idx = n => H.indexOf(n);
+    const fullMap = new Map();
+    (data['04-经费收支'].rows || []).forEach(r => {
+      const s = String((idx('工会名称') >= 0 ? r[idx('工会名称')] : '') || '').trim();
+      const f = String((idx('工会全称') >= 0 ? r[idx('工会全称')] : '') || '').trim();
+      if (s && f) fullMap.set(s, f);
+    });
+    const rows = objs.map((o, i) => [
+      i + 1, o['工会名称'], fullMap.get(o['工会名称']) || '',
+      o['收支类型'], o['经费项目'], o['金额（万元）'], o['备注'] || '',
+    ]);
+    data['05-经费瀑布'] = {
+      title: '各工会经费收支瀑布（桥梁）',
+      subtitle: '结余 = 期初 + 入账 − 支出（未手工指定结余时自动计算）',
+      headers, rows,
+    };
+    changed = true;
+  }
+
+  if (changed) console.log('[ensureSheets] 已为现有数据补齐缺失的数据表');
+  return data;
+}
+
 function readData() {
   const d = readJsonSafe(DATA_FILE);
-  if (d) return d;
+  if (d) return ensureSheets(d);
   // 主文件读不出来（被截断/写坏）→ 用最近一份备份顶上，避免"数据全空"
   const latest = listBackups().find(f => backupKindOf(f.name) === 'data');
   if (latest) {
     const b = readJsonSafe(path.join(BACKUP_DIR, latest.name));
     if (b) {
       console.error(`[readData] 主数据文件不可读，已临时启用备份 ${latest.name}`);
-      return b;
+      return ensureSheets(b);
     }
   }
   console.error('[readData] 数据文件读取失败');
   return null;
+}
+
+/**
+ * 配置升级：把默认模板里「新增的图表/指标/模块块」补进线上已有配置。
+ * 用户改过的东西一律不动（只做加法），且用 seedVersion 记录进度，
+ * 用户之后手动删掉新图表也不会被反复加回来。
+ */
+async function upgradeConfigFromSeed() {
+  const seed = readJsonSafe(CONFIG_SEED_FILE);
+  const stored = readJsonSafe(CONFIG_FILE);
+  if (!seed || !stored || typeof CE.mergeAdditions !== 'function') return;
+  const seedV = Number(seed.version) || 1;
+  const appliedV = Number(stored.seedVersion) || 0;
+  if (appliedV >= seedV) return;
+  const { cfg, added } = CE.mergeAdditions(stored, seed);
+  cfg.seedVersion = seedV;
+  const normalized = normalizeConfig(cfg).cfg;
+  await writeJsonAtomic(CONFIG_FILE, normalized, 'seed-upgrade');
+  console.log(`[upgrade] 看板配置已升级到模板 v${seedV}，新增 ${added.length} 项：${added.join('、') || '（无）'}`);
 }
 // --------------------------- 看板配置的「兜底收敛」 ---------------------------
 // 为什么要有这个：前端后台曾经有个类型 bug —— 图表色板数组被存成了逗号字符串
@@ -366,6 +435,14 @@ function normalizeConfig(cfg) {
       c.width = r;
     }
   }));
+
+  // 2.5) 瀑布（桥梁）图：补默认阶段字段，缺了图表会画不出任何柱子
+  (cfg.charts || []).forEach(c => {
+    if (c.type !== 'waterfall') return;
+    if (!c.stageField) { c.stageField = '收支类型'; warnings.push(`瀑布图「${c.id || ''}」缺少阶段字段，已回退为「收支类型」`); }
+    if (!c.itemField) c.itemField = '经费项目';
+    if (!c.field) { c.field = '金额（万元）'; warnings.push(`瀑布图「${c.id || ''}」缺少金额字段，已回退为「金额（万元）」`); }
+  });
 
   // 3) 悬空引用（只提示、不擅自删除，避免掩盖真实配置问题）
   const metricIds = new Set((cfg.metrics || []).map(m => m.id));
@@ -867,6 +944,9 @@ loadAuth();
   if (newest && Date.now() - newest.mtimeMs < 24 * 3600 * 1000) return;
   backupFile(DATA_FILE, 'startup');
 })();
+
+// 把新版本模板里新增的图表/指标/模块块补进线上配置（用户改过的部分保持原样）
+upgradeConfigFromSeed().catch(e => console.error('[upgrade] 配置升级失败:', e && e.message));
 
 const bootRows = countRows(readData());
 

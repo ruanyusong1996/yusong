@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "text": {
     "documentTitle": "海底捞集团工会工作数据看板",
     "pageTitle": "海底捞集团工会工作数据看板",
@@ -381,6 +381,39 @@
         "sheet": "04-经费收支",
         "groupField": "工会名称"
       }
+    },
+    {
+      "id": "chart-fund-bridge",
+      "visible": true,
+      "title": "",
+      "type": "waterfall",
+      "sheet": "05-经费瀑布",
+      "groupBy": "工会名称",
+      "stageField": "收支类型",
+      "itemField": "经费项目",
+      "field": "金额（万元）",
+      "agg": "sum",
+      "colors": [],
+      "legend": {
+        "show": true,
+        "position": "bottom"
+      },
+      "label": {
+        "show": true,
+        "formatter": "{c}"
+      },
+      "axis": {
+        "rotate": 0,
+        "yName": "万元"
+      },
+      "height": 420,
+      "barWidth": 10,
+      "decimals": 2,
+      "sortBy": "valueDesc",
+      "detail": {
+        "sheet": "05-经费瀑布",
+        "groupField": "工会名称"
+      }
     }
   ],
   "tables": [
@@ -646,6 +679,19 @@
               "visible": true,
               "title": "各工会经费结余（万元）",
               "refId": "chart-fund-bar"
+            }
+          ]
+        },
+        {
+          "id": "c-fund-3",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-fund-bridge",
+              "type": "chart",
+              "visible": true,
+              "title": "各工会经费「期初 → 入账 → 支出 → 结余」桥梁图（万元）",
+              "refId": "chart-fund-bridge"
             }
           ]
         }
