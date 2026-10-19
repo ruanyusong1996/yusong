@@ -491,6 +491,97 @@ class CDP {
   t('提示框说明了列宽会换行', /换行/.test(saved.warnText), true);
   await cdp.evalJs(`(()=>{const b=document.getElementById('cfg-warn-box'); if(b) b.remove();})()`);
 
+  // ---------- 【C3】配置弹窗必须能滚动、底部按钮不能掉出屏幕 ----------
+  console.log('\n【C3】指标/图表/统计表编辑弹窗可滚动（曾因 overflow:hidden 滚不动）');
+  // 用户反馈：「后台看板配置的指标编辑界面无法上下滚动选项」。
+  // 根因：.modal-panel 是 max-height:86vh + overflow:hidden 的 flex 列，
+  // 而 .mini-content 没有 flex:1 / min-height:0 / overflow-y:auto，
+  // 内容一超高就被裁掉（指标弹窗实测 1183px 塞进 688px 的框里），
+  // 底部「筛选条件 / 添加条件 / 取消 / 确认」全都点不到。
+  async function openMini(clickExpr, label) {
+    await cdp.evalJs(clickExpr);
+    await waitFor('!document.getElementById("mini-modal").classList.contains("hidden")', label + ' 打开');
+    await sleep(500);
+  }
+  async function closeMini() {
+    await cdp.evalJs(`document.getElementById('mini-modal-cancel').click()`);
+    await sleep(350);
+  }
+  const modalGeo = () => cdp.evalJs(`(function(){
+    const modal = document.getElementById('mini-modal');
+    const panel = modal.querySelector('.mini-panel');
+    const content = document.getElementById('mini-modal-content');
+    const actions = modal.querySelector('.mini-actions');
+    const pb = panel.getBoundingClientRect(), ab = actions.getBoundingClientRect(), cb = content.getBoundingClientRect();
+    const before = content.scrollTop;
+    content.scrollTop = 1e6;
+    const maxScroll = content.scrollTop;
+    content.scrollTop = before;
+    return {
+      open: !modal.classList.contains('hidden'),
+      wide: panel.classList.contains('mini-panel-wide'),
+      overflowY: getComputedStyle(content).overflowY,
+      scrollable: content.scrollHeight > content.clientHeight + 2,
+      maxScroll: Math.round(maxScroll),
+      panelInViewport: pb.top >= -1 && pb.bottom <= innerHeight + 1,
+      actionsInViewport: ab.top >= -1 && ab.bottom <= innerHeight + 1,
+      contentInPanel: Math.round(cb.width) <= Math.round(pb.width) + 1,
+      viewportH: innerHeight,
+    };
+  })()`);
+
+  await openMini(`document.querySelector('[data-act="metric-edit"]').click()`, '编辑指标');
+  const gMetric = await modalGeo();
+  console.log('    指标弹窗:', JSON.stringify(gMetric));
+  t('指标弹窗已打开', gMetric.open, true);
+  t('指标弹窗整体在视口内', gMetric.panelInViewport, true);
+  t('指标弹窗用宽版（两列排版）', gMetric.wide, true);
+  t('内容区 overflow-y = auto', gMetric.overflowY, 'auto');
+  t('内容超高时确实能滚', gMetric.scrollable ? gMetric.maxScroll > 0 : true, true);
+  t('「取消/确认」始终在视口内', gMetric.actionsInViewport, true);
+
+  // 滚到底 → 筛选条件区域必须可见（过去这里被裁掉）
+  const bottomSeen = await cdp.evalJs(`(function(){
+    const c = document.getElementById('mini-modal-content');
+    c.scrollTop = c.scrollHeight;
+    const cr = c.getBoundingClientRect();
+    const inView = el => { if(!el) return false; const b = el.getBoundingClientRect(); return b.top >= cr.top - 1 && b.bottom <= cr.bottom + 1; };
+    const whereTitle = Array.from(c.querySelectorAll('.cfg-sub-title')).find(el => /筛选条件/.test(el.textContent));
+    return {
+      atBottom: Math.abs(c.scrollTop + c.clientHeight - c.scrollHeight) < 2,
+      whereVisible: inView(whereTitle),
+      addBtnVisible: inView(c.querySelector('[data-wact="add"]')),
+    };
+  })()`);
+  console.log('    滚到底:', JSON.stringify(bottomSeen));
+  t('能滚到内容最底部', bottomSeen.atBottom, true);
+  t('「筛选条件」小标题滚到底后可见', bottomSeen.whereVisible, true);
+  t('「+ 添加条件」按钮滚到底后可见', bottomSeen.addBtnVisible, true);
+  await closeMini();
+
+  // 重新打开应回到顶部（不继承上次的滚动位置）
+  await openMini(`document.querySelector('[data-act="metric-edit"]').click()`, '编辑指标(二次)');
+  t('重新打开时内容回到顶部', await cdp.evalJs(`document.getElementById('mini-modal-content').scrollTop`), 0);
+  await closeMini();
+
+  for (const [act, label] of [['chart-edit', '编辑图表'], ['table-edit', '编辑统计表']]) {
+    await openMini(`document.querySelector('[data-act="${act}"]').click()`, label);
+    const g = await modalGeo();
+    console.log(`    ${label}:`, JSON.stringify(g));
+    t(label + ' 内容区可滚动', g.overflowY, 'auto');
+    t(label + ' 整体在视口内', g.panelInViewport, true);
+    t(label + ' 底部按钮在视口内', g.actionsInViewport, true);
+    await closeMini();
+  }
+
+  // 「选择指标」内容少，应保持窄版，不该被误放大
+  await openMini(`document.querySelector('[data-act="blk-metrics"]').click()`, '选择指标');
+  const gPick = await modalGeo();
+  console.log('    选择指标:', JSON.stringify(gPick));
+  t('「选择指标」保持窄版', gPick.wide, false);
+  t('「选择指标」底部按钮在视口内', gPick.actionsInViewport, true);
+  await closeMini();
+
   // 看板最终结构性校验：把配置改掉 → 看板应变化
   console.log('\n【D】配置改动 → 看板实时改变（配置驱动验证）');
   const before = await cdp.evalJs(`(async()=>{

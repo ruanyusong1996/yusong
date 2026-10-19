@@ -629,6 +629,14 @@ function showMiniModal(title, htmlBody, onConfirm, onShow) {
     const close = document.getElementById('mini-modal-close');
     const root = document.getElementById('mini-modal-content');
 
+    // 带表单网格的弹窗（指标 / 图表 / 统计表）字段多，用宽版两列排版；
+    // 「新增列 / 编辑列 / 选择指标」这类内容少，保持窄版。
+    const panel = modal.querySelector('.mini-panel');
+    if (panel) panel.classList.toggle('mini-panel-wide', !!root.querySelector('.form-grid'));
+
+    // 弹窗刚打开时把内容区滚到顶部，避免上次滚到底部的位置被继承
+    root.scrollTop = 0;
+
     const cleanup = () => {
       modal.classList.add('hidden');
       ok.removeEventListener('click', okFn);

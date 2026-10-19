@@ -400,12 +400,31 @@
   gap: 10px;
 }
 
-/* 小弹窗（新增/编辑列） */
+/* 小弹窗（新增/编辑列、编辑指标/图表/统计表） */
 .mini-panel { max-width: 480px; }
+/* 含表单网格的弹窗（指标/图表/统计表）字段多，用宽版两列，避免纵向过长 */
+.mini-panel.mini-panel-wide { max-width: 880px; }
 .mini-content {
   padding: 18px 24px;
   display: flex; flex-direction: column; gap: 12px;
+  /* 关键：内容超出 max-height(86vh) 时必须能滚动。
+     父级 .modal-panel 是 display:flex + overflow:hidden，
+     这里不设 flex:1 / min-height:0 / overflow-y:auto 的话，
+     超出部分会被直接裁掉 —— 用户就「滚不动、看不到底下的字段和按钮」。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+/* 让滚动条常显（macOS 默认是浮层滚动条，不滚动时看不见，
+   用户会以为「这块不能滚」）。 */
+.mini-content::-webkit-scrollbar { width: 10px; }
+.mini-content::-webkit-scrollbar-track { background: rgba(8, 16, 37, 0.55); border-radius: 5px; }
+.mini-content::-webkit-scrollbar-thumb {
+  background: rgba(77, 216, 255, 0.38); border-radius: 5px;
+  border: 2px solid rgba(8, 16, 37, 0.55);
+}
+.mini-content::-webkit-scrollbar-thumb:hover { background: rgba(77, 216, 255, 0.65); }
 .mini-actions {
   padding: 12px 24px 16px;
   border-top: 1px solid rgba(77, 216, 255, 0.2);
