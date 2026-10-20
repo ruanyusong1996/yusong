@@ -523,6 +523,22 @@
     await _persist();
   }
 
+  /**
+   * 强制从服务端重新拉一份最新数据并替换内存副本（不触发回调，由调用方决定何时刷新）。
+   *
+   * 用途：「按工会编辑瀑布图」这类**整组替换**的保存动作，必须以服务端最新数据为基底。
+   * 只凭打开弹窗那一刻的快照去 PUT 一整份数据，只要期间有别的写入（另一标签页 / 手机端 /
+   * 上一次保存的 SSE 回声），那些工会就会被旧快照覆盖掉 —— 这是「编辑后工会消失」的另一条路径。
+   */
+  async function fetchLatest() {
+    if (_mode === 'api') {
+      const fresh = await apiGet();
+      _data = normalizeData(fresh);
+      _lastSync = new Date().toISOString();
+    }
+    return _data;
+  }
+
   async function reset() {
     if (_mode === 'api') {
       _data = await apiReset();
@@ -910,7 +926,7 @@
   window.DashboardStore = {
     load, onReady, getData, getSheet,
     getSchema,
-    updateSheet, addRow, deleteRow, replaceRow, replaceAll,
+    updateSheet, addRow, deleteRow, replaceRow, replaceAll, fetchLatest,
     addColumn, removeColumn, renameColumn, updateColumn, moveColumn,
     reset, subscribe,
     getMode, getStatus,

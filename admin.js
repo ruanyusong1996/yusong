@@ -1916,11 +1916,21 @@ function fundBalanceOf(m) {
   };
 }
 
-function fundModelToRows(model, orphans) {
-  const rows = [];
+/**
+ * 把编辑模型拍平成「每个工会的行」。
+ *
+ * ⚠️ 不变式：**每个工会至少要落 1 行**。旧版本这里直接把期初/入账/支出拼起来，
+ * 于是「某个工会的科目被删空」时它一行都不产出 —— 工会连同期初/入账/支出从
+ * 「05-经费瀑布」整组消失，看板瀑布图那一行也跟着没了；而「工会骤减」那道保险
+ * 只比对工会名（名字还在 model 里），根本不报警，表现为静默丢数据。
+ * 现在科目为空时补一条 0 元期初兜底，工会不可能凭空消失。
+ */
+function fundRowsByUnion(model) {
+  const map = new Map();
   Object.keys(model).forEach(name => {
     const m = model[name];
-    const push = (stage, it) => rows.push({
+    const out = [];
+    const push = (stage, it) => out.push({
       [FUND_COLS.union]: name,
       [FUND_COLS.full]: m.full || '',
       [FUND_COLS.stage]: stage,
@@ -1932,10 +1942,98 @@ function fundModelToRows(model, orphans) {
     (m.income || []).forEach(it => push('入账', it));
     (m.expense || []).forEach(it => push('支出', it));
     if (m.manual !== null) push('结余', { item: '手工指定', amount: m.manual });
+    if (!out.length) {
+      push('期初', { item: '上年结转', amount: 0 });
+    }
+    map.set(name, out);
   });
-  // 认不出阶段的行原样带回（比如用户填了自定义收支类型），不能悄悄删掉
-  (orphans || []).forEach(r => rows.push(r));
-  return rows;
+  return map;
+}
+
+/**
+ * 从「04-经费收支」读一个工会的期初/入账/支出（元），读不到返回 null。
+ *
+ * ⚠️ 04 表有两种历史表头：
+ *   ① 一行一个工会：`期初金额 / 入账金额 / 支出金额`（线上在用）
+ *   ② 一行一笔流水：`年初金额 / 支出金额` + `收支类型`（早期种子数据）
+ * 所以这里按「多列名候选」取值，最后再用 `当前结余（元）` 做一次校准：
+ * 若 `期初＋入账－支出` 与结余不一致，就用结余倒推期初，保证补出来的瀑布行
+ * 与 04 表的结余完全对齐（否则底部那条「相差 N 元」永远消不掉）。
+ */
+function fundFromFundSheet(name) {
+  const fund = DATA && DATA['04-经费收支'];
+  if (!fund || !Array.isArray(fund.rows)) return null;
+  const H = fund.headers || [];
+  const num = v => {
+    const s = String(v == null ? '' : v).trim();
+    if (s === '') return null;
+    const n = Number(s.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+  const row = fund.rows.find(r => String(DashboardStore.pickValue(r, H, '工会名称') || '').trim() === name);
+  if (!row) return null;
+  const pickNum = (...fields) => {
+    for (let i = 0; i < fields.length; i++) {
+      const v = num(DashboardStore.pickValue(row, H, fields[i]));
+      if (v !== null) return v;
+    }
+    return null;
+  };
+  const income = pickNum('入账金额', '入账金额（元）') || 0;
+  const expense = pickNum('支出金额', '支出金额（元）') || 0;
+  let initial = pickNum('期初金额', '期初金额（元）', '年初金额', '年初金额（元）') || 0;
+  let balance = pickNum('当前结余（元）');
+  if (balance === null) {
+    const wan = pickNum('当前结余（万元）');
+    if (wan !== null) balance = wan * 10000;
+  }
+  if (balance !== null) {
+    const calc = initial + income - expense;
+    if (Math.abs(calc - balance) > 0.5) initial = balance - income + expense;
+  }
+  return {
+    full: String(DashboardStore.pickValue(row, H, '工会全称') || '').trim(),
+    initial, income, expense,
+  };
+}
+
+/**
+ * 瀑布表与「04-经费收支」的名单比对：
+ *  - missing：04 表有、瀑布表没有的工会（多半是历史上被误删的，可一键补回）
+ *  - blank  ：瀑布表里在，但金额全是 0、而 04 表有数的工会（新增工会时没填金额）
+ */
+function fundCoverageInfo(model) {
+  const fund = DATA && DATA['04-经费收支'];
+  if (!fund || !Array.isArray(fund.rows)) return null;
+  const H = fund.headers || [];
+  const seen = new Set();
+  const out = { missing: [], blank: [] };
+  fund.rows.forEach(r => {
+    const n = String(DashboardStore.pickValue(r, H, '工会名称') || '').trim();
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    const f = fundFromFundSheet(n);
+    if (!f) return;
+    const num = f.initial || f.income || f.expense;
+    if (!num) return;
+    if (!model[n]) { out.missing.push({ name: n, ...f }); return; }
+    const hasMoney = ['initial', 'income', 'expense'].some(k => (model[n][k] || []).some(it => Number(it.amount)));
+    if (!hasMoney) out.blank.push({ name: n, ...f });
+  });
+  return out;
+}
+
+function fundCoverageHtml(model) {
+  const info = fundCoverageInfo(model);
+  if (!info) return '';
+  const total = info.missing.length + info.blank.length;
+  if (!total) return '';
+  const names = list => list.slice(0, 6).map(x => escapeHtml(x.name)).join('、') + (list.length > 6 ? ' 等' : '');
+  const tips = [];
+  if (info.missing.length) tips.push(`<span class="wf-diff">⚠ 有 ${info.missing.length} 个工会只在「04-经费收支」里、瀑布图没有：${names(info.missing)}</span>`);
+  if (info.blank.length) tips.push(`<span class="wf-diff">⚠ 有 ${info.blank.length} 个工会瀑布图金额全是 0，但「04-经费收支」有数：${names(info.blank)}</span>`);
+  return `<div class="wf-fix">${tips.join('')}`
+    + `<button class="mini-btn" type="button" data-wf-fill-missing>按 04 表补全 ${total} 个工会</button></div>`;
 }
 
 /** 科目行（期初/入账/支出）的编辑行 HTML */
@@ -1973,6 +2071,7 @@ function fundUnionPanelHtml(m) {
       <button class="mini-btn" type="button" data-wf-add="支出">＋ 添加支出项</button>
       <button class="mini-btn" type="button" data-wf-add="期初">＋ 添加期初项</button>
     </div>
+    ${rows ? '' : '<p class="cfg-hint wf-warn-hint">⚠ 这个工会现在没有任何科目行。保存时会自动补一条 0 元期初，工会不会从瀑布图上消失。</p>'}
     <div class="wf-sum">
       <span>期初 <b>${fmt(b.initial)}</b></span>
       <span>＋ 入账 <b class="wf-in-text">${fmt(b.income)}</b></span>
@@ -2047,15 +2146,21 @@ async function openFundEditor() {
   const renamed = new Set();
   let active = Object.keys(model)[0] || '';
 
+  // 「DOM 里该有几行科目」的账本：只有本弹窗自己的合法操作（新增行 / 点 × 删行 / 重绘）
+  // 才能改动它。collect() 会核对实际行数与这本账是否一致，不一致说明面板被别的东西
+  // 改过（弹窗被顶掉、DOM 被替换……），此时**绝不能**把读到的空白当成「用户清空了科目」写库。
+  let rowBudget = 0;
+  let collectMsg = '';
+
   const shell = `
     <div class="wf-wrap">
       <div class="wf-side">
         <div class="wf-side-head"><b>工会组织</b><button class="mini-btn" type="button" id="wf-add-union">＋ 新增工会</button></div>
         <div id="wf-side-list">${fundSideHtml(model, active)}</div>
       </div>
-      <div class="wf-main" id="wf-main">${active ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>'}</div>
+      <div class="wf-main" id="wf-main" data-wf-current="${escapeHtml(active)}">${active ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>'}</div>
     </div>
-    <div class="wf-cross" id="wf-cross">${fundCrossCheckHtml(model)}</div>`;
+    <div class="wf-cross" id="wf-cross">${fundCrossCheckHtml(model)}${fundCoverageHtml(model)}</div>`;
 
   /**
    * 把当前面板里的输入写回 model（切换工会 / 保存前都要先做，否则改动会丢）。
@@ -2063,15 +2168,26 @@ async function openFundEditor() {
    * 把读到的空白当成「用户清空了科目」写回 —— 那是一次静默的数据清空事故。
    */
   const collect = (root) => {
+    collectMsg = '';
     if (!active || !model[active]) return true;
     const m = model[active];
     const nameEl = root.querySelector('#wf-union-name');
     const fullEl = root.querySelector('#wf-union-full');
     const rowsHost = root.querySelector('#wf-rows');
-    if (!nameEl && !rowsHost) return false;
+    if (!nameEl && !rowsHost) { collectMsg = '编辑面板已失效（可能被其它弹窗覆盖），请关闭后重新打开「瀑布图编辑」'; return false; }
+    // 面板上显示的不是当前工会（重绘错位 / 被别的层顶掉）→ 拒绝写回
+    const mainEl = root.querySelector('#wf-main');
+    if (mainEl && mainEl.dataset.wfCurrent && mainEl.dataset.wfCurrent !== active) {
+      collectMsg = '编辑面板与当前工会对不上（可能被其它弹窗覆盖），请关闭后重新打开「瀑布图编辑」';
+      return false;
+    }
     if (nameEl) {
       const nn = String(nameEl.value || '').trim();
       if (nn && nn !== m.name) {           // 改名：把整组搬到新名字下
+        if (model[nn] && model[nn] !== m) {
+          collectMsg = `「${nn}」已经是另一个工会的名字了，请换一个名称`;
+          return false;
+        }
         renamed.add(m.name);
         model[nn] = m; delete model[m.name]; m.name = nn; active = nn;
       }
@@ -2080,10 +2196,19 @@ async function openFundEditor() {
 
     const groups = { 期初: [], 入账: [], 支出: [] };
     if (rowsHost) {
+      // 行数必须与账本一致，否则说明 DOM 被外力改过 —— 读到多少都不能信
+      const seen = rowsHost.querySelectorAll('[data-wf-item]').length;
+      if (seen !== rowBudget) {
+        collectMsg = '科目行数异常（面板可能被其它弹窗改动过），为避免把数据清空，本次保存已中止。请关闭后重新打开「瀑布图编辑」';
+        return false;
+      }
       rowsHost.querySelectorAll('[data-wf-item]').forEach(tr => {
         const stage = tr.dataset.wfStage;
-        const item = tr.querySelector('[data-wf-name]').value.trim();
-        const raw = tr.querySelector('[data-wf-amt]').value.trim();
+        const nameInp = tr.querySelector('[data-wf-name]');
+        const amtInp = tr.querySelector('[data-wf-amt]');
+        if (!nameInp || !amtInp) return;
+        const item = nameInp.value.trim();
+        const raw = amtInp.value.trim();
         const amt = raw === '' ? 0 : Number(raw);
         if (!groups[stage]) return;
         groups[stage].push({ item: item || '未命名', amount: Number.isFinite(amt) ? amt : 0 });
@@ -2096,7 +2221,7 @@ async function openFundEditor() {
     const manualCb = root.querySelector('#wf-manual');
     const balEl = root.querySelector('#wf-balance');
     if (manualCb && manualCb.checked) {
-      const raw = String(balEl.value || '').trim();
+      const raw = String((balEl && balEl.value) || '').trim();
       const v = raw === '' ? 0 : Number(raw);
       m.manual = Number.isFinite(v) ? v : 0;
     } else {
@@ -2108,41 +2233,113 @@ async function openFundEditor() {
   const repaint = (root) => {
     root.querySelector('#wf-side-list').innerHTML = fundSideHtml(model, active);
     const main = root.querySelector('#wf-main');
+    main.dataset.wfCurrent = active || '';
     main.innerHTML = active && model[active] ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>';
     main.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, { decimals: FUND_DECIMALS }));
+    rowBudget = main.querySelectorAll('#wf-rows [data-wf-item]').length;
     const cross = root.querySelector('#wf-cross');
-    if (cross) cross.innerHTML = fundCrossCheckHtml(model);
+    if (cross) cross.innerHTML = fundCrossCheckHtml(model) + fundCoverageHtml(model);
+  };
+
+  /** 科目行被删空 / 加回来时，同步那条「保存会补 0 元、工会不会消失」的提示 */
+  const syncEmptyHint = (root) => {
+    const host = root.querySelector('#wf-rows');
+    if (!host) return;
+    const has = host.querySelectorAll('[data-wf-item]').length > 0;
+    const old = root.querySelector('.wf-warn-hint');
+    if (has) { if (old) old.remove(); return; }
+    if (old) return;
+    const p = document.createElement('p');
+    p.className = 'cfg-hint wf-warn-hint';
+    p.textContent = '⚠ 这个工会现在没有任何科目行。保存时会自动补一条 0 元期初，工会不会从瀑布图上消失。';
+    const addRow = root.querySelector('.wf-add-row');
+    if (addRow) addRow.insertAdjacentElement('afterend', p);
   };
 
   await showMiniModal('经费瀑布（桥梁）图编辑', shell, async (root) => {
     if (!collect(root)) {
-      toast('编辑面板已失效（可能被其它弹窗覆盖），请关闭后重新打开「瀑布图编辑」', 'error');
+      toast(collectMsg || '编辑面板已失效（可能被其它弹窗覆盖），请关闭后重新打开「瀑布图编辑」', 'error');
       return false;
     }
     // 校验：工会名不能为空 / 重名已由 collect 处理
     const bad = Object.keys(model).filter(n => !n.trim());
     if (bad.length) { toast('工会名称不能为空', 'error'); return false; }
 
-    // 第二道保险：工会数量骤减时必须二次确认。
-    // 保存是「整表替换」，一旦 model 少了一个工会，那个工会的期初/入账/支出就全没了；
-    // 主动删的（dropped）和改名的（renamed）不算，剩下的都必须让用户点头。
-    const before = new Set(fundSheetRows()
-      .map(r => String(r[FUND_COLS.union] == null ? '' : r[FUND_COLS.union]).trim())
-      .filter(Boolean));
-    const after = new Set(Object.keys(model).map(n => String(n).trim()).filter(Boolean));
-    const lost = [...before].filter(n => !after.has(n) && !dropped.has(n) && !renamed.has(n));
-    if (lost.length) {
-      const okDel = await confirmDialog(
-        `这次保存会让 ${lost.length} 个工会从瀑布图上消失：${lost.slice(0, 8).join('、')}${lost.length > 8 ? ' 等' : ''}。\n` +
-        '如果确实要删，点「确认」；如果是误操作，点「取消」返回检查。',
-        '确认删除这些工会的经费数据？');
-      if (!okDel) return false;
+    // ⚠️ 保存必须以「服务端最新数据」为基底，不能只凭打开弹窗那一刻的快照整表覆盖。
+    //    旧版本就是这样：model 里少一个工会（或期间有别的写入），那个工会的期初/入账/支出
+    //    会连同整组行一起被删掉，而且「工会骤减」只比对工会名，根本发现不了。
+    //    现在改成合并语义：只重写本次编辑过的工会，没出现在面板里的原样保留。
+    let freshRows = [];
+    try {
+      const fresh = await DashboardStore.fetchLatest();
+      const s = fresh && fresh[FUND_SHEET];
+      freshRows = s && Array.isArray(s.rows) ? s.rows : [];
+    } catch (e) {
+      console.error(e);
+      toast('读取服务器最新数据失败，已中止保存（避免覆盖别人的修改）：' + (e.message || e), 'error');
+      setSync('error', '读取失败');
+      return false;
     }
+
+    const nameOf = r => String(r[FUND_COLS.union] == null ? '' : r[FUND_COLS.union]).trim();
+    const serverOrder = [];
+    const serverRows = new Map();
+    freshRows.forEach(r => {
+      const n = nameOf(r);
+      if (!n) return;
+      if (!serverRows.has(n)) { serverRows.set(n, []); serverOrder.push(n); }
+      serverRows.get(n).push(r);
+    });
+
+    const modelRows = fundRowsByUnion(model);
+    const modelNames = [...modelRows.keys()];
+    const gone = new Set([...dropped, ...renamed]);     // 主动删除 / 改名（旧名字不算「丢失」）
+
+    // ① 本次没在面板里出现、也没被主动删除的工会 → 原样保留
+    const untouched = serverOrder.filter(n => !modelRows.has(n) && !gone.has(n));
+    // ② 用户主动「删除该工会」（点按钮时已确认过一次，这里只统计）
+    const toDelete = serverOrder.filter(n => dropped.has(n));
+    // ③ 原本有金额、现在被清成 0 的工会 → 一定是误操作，必须点头
+    const emptied = modelNames.filter(n => {
+      const before = serverRows.get(n) || [];
+      const had = before.some(r => Number(r[FUND_COLS.amount]));
+      const now = (modelRows.get(n) || []).some(r => Number(r[FUND_COLS.amount]));
+      return had && !now;
+    });
+
+    if (emptied.length) {
+      // 主动按「删除该工会」的不用再问（点按钮时已经确认过一次了），
+      // 但「原本有钱、现在被清成 0」几乎一定是误操作 —— 这正是历史上静默丢数据的入口，必须点头。
+      const lines = [`本次保存会把 ${emptied.length} 个工会的金额清成 0：${emptied.slice(0, 8).join('、')}${emptied.length > 8 ? ' 等' : ''}。`,
+        '如果只是想去掉某个科目，点「取消」回去检查；确实要清零再点「确认」。',
+        '（工会本身不会消失，会保留成 0 元一行。）'];
+      if (toDelete.length) lines.push(`另有 ${toDelete.length} 个工会会被删除：${toDelete.slice(0, 8).join('、')}。`);
+      if (untouched.length) lines.push(`${untouched.length} 个本次没编辑的工会会原样保留。`);
+      const okSave = await confirmDialog(lines.join('\n'), '保存前请核对');
+      if (!okSave) return false;
+    }
+
+    // ④ 拼最终行：服务端原有工会按原顺序，编辑过的用新行、没编辑的原样保留、删除的跳过
+    const finalRows = [];
+    const emitted = new Set();
+    serverOrder.forEach(n => {
+      if (dropped.has(n)) return;
+      if (modelRows.has(n)) { modelRows.get(n).forEach(r => finalRows.push(r)); emitted.add(n); return; }
+      if (renamed.has(n)) return;                       // 改名：旧名字的行由新名字那份替代
+      (serverRows.get(n) || []).forEach(r => finalRows.push(r));
+    });
+    modelNames.forEach(n => {
+      if (emitted.has(n) || dropped.has(n)) return;
+      modelRows.get(n).forEach(r => finalRows.push(r));
+    });
+    // 认不出阶段的历史行原样带回（绝不静默丢数据）
+    (orphans || []).forEach(r => finalRows.push(r));
 
     setSync('syncing');
     try {
-      await DashboardStore.updateSheet(FUND_SHEET, fundModelToRows(model, orphans));
-      toast('已保存，看板瀑布图会实时刷新');
+      await DashboardStore.updateSheet(FUND_SHEET, finalRows);
+      const tail = untouched.length ? `，${untouched.length} 个未编辑的工会已原样保留` : '';
+      toast(`已保存（${modelNames.length} 个工会已更新${tail}）`);
       setTimeout(() => refreshSyncBadge(), 600);
       return true;
     } catch (e) {
@@ -2158,14 +2355,19 @@ async function openFundEditor() {
       // 切换工会
       const li = ev.target.closest('[data-wf-union]');
       if (li) {
-        collect(root);
+        if (!collect(root)) { toast(collectMsg || '编辑面板已失效，请重新打开', 'error'); return; }
         active = li.dataset.wfUnion;
         repaint(root);
         return;
       }
       // 删除科目行
       const del = ev.target.closest('[data-wf-del]');
-      if (del) { del.closest('[data-wf-item]').remove(); return; }
+      if (del) {
+        const tr = del.closest('[data-wf-item]');
+        if (tr) { tr.remove(); rowBudget = Math.max(0, rowBudget - 1); }
+        syncEmptyHint(root);
+        return;
+      }
       // 添加科目行
       const add = ev.target.closest('[data-wf-add]');
       if (add) {
@@ -2175,15 +2377,45 @@ async function openFundEditor() {
         const n = host.querySelectorAll('[data-wf-item]').length;
         host.insertAdjacentHTML('beforeend', fundItemRowHtml(stage, { item: '', amount: 0 }, n));
         host.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, { decimals: FUND_DECIMALS }));
+        rowBudget = host.querySelectorAll('[data-wf-item]').length;
+        syncEmptyHint(root);
         const last = host.querySelector(`[data-wf-item="${n}"] [data-wf-name]`);
         if (last) last.focus();
+        return;
+      }
+      // 按「04-经费收支」补回 / 补全工会（只补空缺，不覆盖已有非零数据；确认后才落库）
+      if (ev.target.closest('[data-wf-fill-missing]')) {
+        if (!collect(root)) { toast(collectMsg || '编辑面板已失效，请重新打开', 'error'); return; }
+        const info = fundCoverageInfo(model);
+        if (!info || (!info.missing.length && !info.blank.length)) { toast('没有需要补全的工会'); return; }
+        info.missing.forEach(x => {
+          model[x.name] = {
+            name: x.name,
+            full: x.full || '',
+            initial: [{ item: '期初', amount: x.initial }],
+            income: x.income ? [{ item: '银行利息', amount: x.income }] : [],
+            expense: x.expense ? [{ item: '全部支出', amount: x.expense }] : [],
+            manual: null,
+          };
+        });
+        info.blank.forEach(x => {
+          const m = model[x.name];
+          if (!m) return;
+          m.initial = [{ item: '期初', amount: x.initial }];
+          m.income = x.income ? [{ item: '银行利息', amount: x.income }] : [];
+          m.expense = x.expense ? [{ item: '全部支出', amount: x.expense }] : [];
+          m.manual = null;
+        });
+        if (info.missing.length) active = info.missing[0].name;
+        repaint(root);
+        toast(`已按「04-经费收支」补全 ${info.missing.length + info.blank.length} 个工会，请核对后点「确认」保存`);
         return;
       }
       // 删除整个工会
       if (ev.target.closest('#wf-del-union')) {
         if (!active) return;
         const name = active;
-        const ok = await confirmDialog(`确认删除工会「${name}」的全部经费科目？该工会会从瀑布图上消失（不影响其它数据表）`, '删除工会');
+        const ok = await confirmDialog(`确认删除工会「${name}」的全部经费科目？该工会会从瀑布图上消失（不影响其它数据表）。\n点「取消」只是不删，改动都还在。`, '删除工会');
         if (!ok) return;
         dropped.add(name);
         delete model[name];
@@ -2193,6 +2425,7 @@ async function openFundEditor() {
       }
       // 新增工会
       if (ev.target.closest('#wf-add-union')) {
+        if (!collect(root)) { toast(collectMsg || '编辑面板已失效，请重新打开', 'error'); return; }
         const added = await promptAddUnion();
         if (added) {
           // 新工会已经写进 DATA 了，把它并进当前正在编辑的模型（不清掉未保存的改动）

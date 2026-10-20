@@ -679,6 +679,13 @@
 .wf-cross b { color: #E6EEFF; font-variant-numeric: tabular-nums; }
 .wf-diff { color: #F59E0B; }
 .wf-ok { color: #10B981; }
+/* 与「04-经费收支」名单/金额不一致时的补全提示（独占一行） */
+.wf-fix {
+  flex-basis: 100%; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-top: 8px; border-top: 1px dashed rgba(77, 216, 255, 0.18);
+}
+.wf-warn-hint { color: #F59E0B; margin: 6px 0 0; }
+.wf-item-amt[disabled] { opacity: .45; }
 @media (max-width: 860px) {
   .wf-wrap { flex-direction: column; }
   .wf-side { width: 100%; flex: none; }

@@ -49,7 +49,7 @@ const CE = globalThis.ConfigEngine || {};
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.5.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢

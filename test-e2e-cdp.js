@@ -733,6 +733,15 @@ class CDP {
   })()`);
   await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
   await sleep(1500);
+  // 保存没生效时先把「弹窗是否还开着 / 有没有报错 toast」打出来，避免只能看到「行数没变」
+  const e2dbg = await cdp.evalJs(`(function(){
+    return {
+      miniOpen: !document.getElementById('mini-modal').classList.contains('hidden'),
+      confirmOpen: !document.getElementById('confirm-modal').classList.contains('hidden'),
+      toast: (document.getElementById('toast')||{}).textContent || '',
+    };
+  })()`);
+  console.log('    保存后:', JSON.stringify(e2dbg));
   const wfSaved = await cdp.evalJs(`(async()=>{
     const d = await (await fetch('/api/data',{credentials:'include'})).json();
     const rows = d['05-经费瀑布'].rows;
@@ -889,6 +898,146 @@ class CDP {
   t('主动删除的工会不会触发「骤减」二次追问', afterDel.confirmStillOpen, false);
   t('主动删除已生效（该工会从瀑布表移除）', afterDel.unions.indexOf('E2E嵌套测试工会') < 0, true);
   t('删除一个工会不影响其它工会', JSON.stringify(lostDel), JSON.stringify([]));
+
+  // ---------- 【E4】回归：科目行被删空的工会不能整组消失 ----------
+  // 真实事故（v1.4.2 线上仍复现）：把某工会的 3 行科目逐个点 × 删掉再保存 →
+  // fundModelToRows 一行都不产出，工会连同期初/入账/支出从「05-经费瀑布」整组消失，
+  // 看板瀑布图那一行也跟着没了；而「工会骤减」保险只比对**工会名**（名字还在 model 里），
+  // 压根不报警 —— 这就是「编辑完瀑布图，工会组织凭空消失」的真凶。
+  console.log('\n【E4】科目被删空的工会不能整组消失');
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(删空)');
+  const beforeEmpty = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return {
+      name: String(rows[0]['工会名称'] || '').trim(),
+      rows: rows.length,
+      unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))],
+      snapshot: rows,
+    };
+  })()`);
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器(删空)');
+  await cdp.evalJs(`(function(){ const li=document.querySelector('.wf-union-list li[data-wf-union]'); if(li) li.click(); return true; })()`);
+  await sleep(350);
+  const rowCount0 = await cdp.evalJs('document.querySelectorAll("#wf-rows [data-wf-item]").length');
+  for (let i = 0; i < rowCount0; i++) {
+    await cdp.evalJs(`(function(){const r=document.querySelectorAll('#wf-rows [data-wf-item]')[0]; if(r) r.querySelector('[data-wf-del]').click(); return true;})()`);
+    await sleep(80);
+  }
+  t('科目行能被逐个删掉（点 × 生效）', await cdp.evalJs('document.querySelectorAll("#wf-rows [data-wf-item]").length'), 0);
+  t('删空后给出「保存会补 0 元」的提示', await cdp.evalJs(`!!document.querySelector('.wf-warn-hint')`), true);
+
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  const needConfirm = await waitFor('!document.getElementById("confirm-modal").classList.contains("hidden")', '清零保存确认框', 6000);
+  t('金额被清成 0 时保存前必须二次确认', needConfirm, true);
+  await cdp.evalJs(`document.getElementById('confirm-ok').click()`);
+  await sleep(1800);
+  const afterEmpty = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    const name = ${JSON.stringify(beforeEmpty.name)};
+    return {
+      rows: rows.length,
+      unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))],
+      mine: rows.filter(r=>String(r['工会名称']||'').trim()===name).length,
+    };
+  })()`);
+  const lostEmpty = beforeEmpty.unions.filter(n => afterEmpty.unions.indexOf(n) < 0);
+  console.log('    删空后保存:', JSON.stringify({ rows: afterEmpty.rows, mine: afterEmpty.mine }), '丢失:', JSON.stringify(lostEmpty));
+  t('科目被删空的工会仍然在（不会整组消失）', JSON.stringify(lostEmpty), JSON.stringify([]));
+  t('该工会保留 1 行 0 元期初兜底', afterEmpty.mine, 1);
+
+  // 恢复这份测试数据，后面的用例还要用
+  const restoredEmpty = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    d['05-经费瀑布'].rows = ${JSON.stringify(beforeEmpty.snapshot)};
+    const r = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+    return r.status;
+  })()`);
+  t('删空用例的数据已恢复', restoredEmpty, 200);
+
+  // ---------- 【E5】保存是「合并」而不是整表覆盖 ----------
+  // 编辑器开着的时候，别的标签页/手机端写进来的工会，保存时绝不能被旧快照抹掉。
+  console.log('\n【E5】编辑器开着时别人写入的工会不能被覆盖');
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(并发)');
+  const beforeConcurrent = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return { rows: rows.length, unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))] };
+  })()`);
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器(并发)');
+  const injected = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    d['05-经费瀑布'].rows.push({'工会名称':'E2E并发工会','工会全称':'','收支类型':'期初','经费项目':'期初','金额（元）':66.6,'备注':''});
+    const r = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+    return r.status;
+  })()`);
+  t('模拟「另一客户端」写入成功', injected, 200);
+  await sleep(1200);   // 等 SSE 回声
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1800);
+  const afterConcurrent = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return {
+      rows: rows.length,
+      unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))],
+      mine: rows.filter(r=>String(r['工会名称']||'').trim()==='E2E并发工会').length,
+    };
+  })()`);
+  const lostConcurrent = beforeConcurrent.unions.filter(n => afterConcurrent.unions.indexOf(n) < 0);
+  console.log('    并发保存后:', JSON.stringify(afterConcurrent), '丢失:', JSON.stringify(lostConcurrent));
+  t('保存不会抹掉别人刚写入的工会', afterConcurrent.mine, 1);
+  t('原有工会一个不少', JSON.stringify(lostConcurrent), JSON.stringify([]));
+
+  // ---------- 【E6】「按 04 表补全」能把误删的工会找回来 ----------
+  console.log('\n【E6】按「04-经费收支」补回被误删的工会');
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(补全)');
+  const victim = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const n4 = [...new Set(d['04-经费收支'].rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))];
+    const n5 = [...new Set(d['05-经费瀑布'].rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))];
+    const name = n5.find(n => n4.indexOf(n) >= 0 && n.indexOf('E2E') < 0);
+    const mine = d['05-经费瀑布'].rows.filter(r=>String(r['工会名称']||'').trim()===name);
+    d['05-经费瀑布'].rows = d['05-经费瀑布'].rows.filter(r=>String(r['工会名称']||'').trim()!==name);
+    const r = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+    return { name, removed: mine.length, status: r.status };
+  })()`);
+  console.log('    故意整组删掉:', JSON.stringify(victim));
+  // ⚠️ 必须真的重新加载页面：Page.navigate 到同一个 URL 时浏览器可能不重新拉数据，
+  //    那样 DATA 还是改之前那份，页面上就看不到「只在 04 表里的工会」。
+  await cdp.send('Page.navigate', { url: BASE + '/admin.html?e6=' + Date.now() });
+  await waitFor('document.readyState==="complete" && document.querySelectorAll(".tab-btn").length>0', '后台就绪(补全)');
+  await sleep(600);
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(补全2)');
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器(补全)');
+  const hasFixBtn = await cdp.evalJs(`(function(){
+    const b = document.querySelector('[data-wf-fill-missing]');
+    return b ? { found: true, text: b.textContent.trim(), visible: b.offsetParent !== null } : { found: false };
+  })()`);
+  console.log('    补全按钮:', JSON.stringify(hasFixBtn));
+  t('检测到「只在 04 表里的工会」并给出补全按钮', hasFixBtn.found, true);
+  t('补全按钮真实可见', hasFixBtn.visible, true);
+  await cdp.evalJs(`document.querySelector('[data-wf-fill-missing]').click()`);
+  await sleep(500);
+  t('点补全后该工会出现在左侧列表',
+    await cdp.evalJs(`[...document.querySelectorAll('.wf-union-list li[data-wf-union]')].some(x=>x.dataset.wfUnion===${JSON.stringify(victim.name)})`), true);
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1800);
+  const afterFix = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows.filter(r=>String(r['工会名称']||'').trim()===${JSON.stringify(victim.name)});
+    return { rows: rows.length, stages: rows.map(r=>r['收支类型']), amounts: rows.map(r=>r['金额（元）']) };
+  })()`);
+  console.log('    补回后:', JSON.stringify(afterFix));
+  t('误删的工会被补回瀑布表（至少 1 行期初）', afterFix.rows >= 1 && afterFix.stages.indexOf('期初') >= 0, true);
+  t('补回的金额取自「04-经费收支」（>0）', afterFix.amounts.some(a => Number(a) > 0), true);
 
   // 清理测试数据（E2E 用的是临时数据副本，但保持干净便于反复跑）
   await gotoAdmin();
