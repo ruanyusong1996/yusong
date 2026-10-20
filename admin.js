@@ -90,10 +90,13 @@ function confirmDialog(message, title = '确认操作') {
     document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-message').textContent = message;
     modal.classList.remove('hidden');
+    // 确认框要盖在任何一层 mini 弹窗之上（弹窗栈是 100 + depth，这里固定 200）
+    modal.style.zIndex = '200';
     const ok = document.getElementById('confirm-ok');
     const cancel = document.getElementById('confirm-cancel');
     const close = (val) => {
       modal.classList.add('hidden');
+      modal.style.zIndex = '';
       ok.removeEventListener('click', okFn);
       cancel.removeEventListener('click', cancelFn);
       resolve(val);
@@ -641,18 +644,67 @@ async function promptEditColumn(fieldName) {
   }
 }
 
-/** 通用小弹窗（无嵌套关闭） */
+/**
+ * 弹窗栈（支持嵌套）。
+ *
+ * ⚠️ 这里曾经是个会**静默清空数据**的坑：以前 showMiniModal 只有页面里那一个
+ * #mini-modal，正文/按钮/回调全写在同一个 DOM 上。于是在「🌉 瀑布图编辑」里
+ * 点「＋ 新增工会」时，内层弹窗把 #mini-modal-content 的 innerHTML 换成新增工会表单，
+ * 但外层的 ok 监听器仍挂在同一个 #mini-modal-ok 上 —— 点一次「确认」会同时触发
+ * 两个 onConfirm：
+ *   1) 外层瀑布编辑器的 collect(root) 在已失效的 DOM 里找不到 #wf-rows，
+ *      于是把当前工会的期初/入账/支出全当成「用户清空了」写回数据表；
+ *   2) 内层新增工会再写一次，把被清空的版本当成基底。
+ * 结果就是「编辑完瀑布图后，工会组织连同金额一起消失」。
+ *
+ * 现在每层弹窗独立创建 DOM，互不影响；顶层仍复用页面里的 #mini-modal，
+ * 保持 #mini-modal-ok 这些 id 对既有测试/脚本的兼容。
+ */
+const MINI_STACK = [];
+
+/** 新建一层弹窗（嵌套时用；顶层仍用页面里的 #mini-modal） */
+function buildMiniLayer() {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop mini-layer';
+  wrap.innerHTML = `
+    <div class="modal-panel mini-panel">
+      <div class="modal-header">
+        <h2 class="modal-title mini-title">—</h2>
+        <button type="button" class="modal-close mini-close">×</button>
+      </div>
+      <div class="mini-content mini-body">—</div>
+      <div class="mini-actions">
+        <button type="button" class="btn btn-ghost mini-cancel">取消</button>
+        <button type="button" class="btn btn-primary mini-ok">确认</button>
+      </div>
+    </div>`;
+  return wrap;
+}
+
 function showMiniModal(title, htmlBody, onConfirm, onShow) {
   return new Promise((resolve) => {
-    const modal = document.getElementById('mini-modal');
-    document.getElementById('mini-modal-title').textContent = title;
-    document.getElementById('mini-modal-content').innerHTML = htmlBody;
-    modal.classList.remove('hidden');
+    const depth = MINI_STACK.length;
+    const base = document.getElementById('mini-modal');
+    const isBase = depth === 0 || !base;
+    const modal = isBase ? base : buildMiniLayer();
+    if (!modal) { resolve(false); return; }
 
-    const ok = document.getElementById('mini-modal-ok');
-    const cancel = document.getElementById('mini-modal-cancel');
-    const close = document.getElementById('mini-modal-close');
-    const root = document.getElementById('mini-modal-content');
+    const q = (id, cls) => modal.querySelector('#' + id + ', .' + cls);
+    const titleEl = q('mini-modal-title', 'mini-title');
+    const root = q('mini-modal-content', 'mini-body');
+    const ok = q('mini-modal-ok', 'mini-ok');
+    const cancel = q('mini-modal-cancel', 'mini-cancel');
+    const close = q('mini-modal-close', 'mini-close');
+
+    if (titleEl) titleEl.textContent = title;
+    if (root) root.innerHTML = htmlBody;
+
+    if (!isBase) {
+      modal.style.zIndex = String(100 + depth);   // 叠在上一层之上
+      document.body.appendChild(modal);
+    }
+    modal.classList.remove('hidden');
+    MINI_STACK.push(modal);
 
     // 带表单网格的弹窗（指标 / 图表 / 统计表）字段多，用宽版两列排版；
     // 瀑布图编辑器有左右分栏，同样需要宽版；
@@ -663,17 +715,36 @@ function showMiniModal(title, htmlBody, onConfirm, onShow) {
     // 弹窗刚打开时把内容区滚到顶部，避免上次滚到底部的位置被继承
     root.scrollTop = 0;
 
+    let settled = false;
     const cleanup = () => {
-      modal.classList.add('hidden');
       ok.removeEventListener('click', okFn);
       cancel.removeEventListener('click', cancelFn);
       close.removeEventListener('click', cancelFn);
+      const i = MINI_STACK.indexOf(modal);
+      if (i >= 0) MINI_STACK.splice(i, 1);
+      if (isBase) { modal.classList.add('hidden'); modal.style.zIndex = ''; }
+      else modal.remove();
     };
     const okFn = async () => {
-      const ok = await onConfirm(root);
-      if (ok) { cleanup(); resolve(true); }
+      if (settled) return;          // 防连点/防和其它层的回调串台
+      settled = true;
+      let pass = false;
+      try {
+        pass = await onConfirm(root);
+      } catch (e) {
+        console.error('[modal] 确认处理失败', e);
+        toast('操作失败：' + (e && e.message ? e.message : e), 'error');
+        pass = false;
+      }
+      if (pass) { cleanup(); resolve(true); }
+      else settled = false;         // 校验没过，允许用户改完再点
     };
-    const cancelFn = () => { cleanup(); resolve(false); };
+    const cancelFn = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(false);
+    };
 
     ok.addEventListener('click', okFn);
     cancel.addEventListener('click', cancelFn);
@@ -1970,6 +2041,10 @@ function fundSideHtml(model, active) {
 async function openFundEditor() {
   if (!DATA || !DATA[FUND_SHEET]) { toast('未找到「05-经费瀑布」表，请刷新页面', 'error'); return; }
   const { model, orphans } = fundBuildModel();
+  // 用户主动「删除该工会」/「改名」的，记录一下；保存时的「工会骤减」确认要放过它们，
+  // 否则每次正常改名都会被自己的保险拦一次。
+  const dropped = new Set();
+  const renamed = new Set();
   let active = Object.keys(model)[0] || '';
 
   const shell = `
@@ -1982,32 +2057,41 @@ async function openFundEditor() {
     </div>
     <div class="wf-cross" id="wf-cross">${fundCrossCheckHtml(model)}</div>`;
 
-  /** 把当前面板里的输入写回 model（切换工会 / 保存前都要先做，否则改动会丢） */
+  /**
+   * 把当前面板里的输入写回 model（切换工会 / 保存前都要先做，否则改动会丢）。
+   * 返回 false 表示「面板已经不在 DOM 里了」（比如被别的弹窗顶掉），此时绝不能
+   * 把读到的空白当成「用户清空了科目」写回 —— 那是一次静默的数据清空事故。
+   */
   const collect = (root) => {
-    if (!active || !model[active]) return;
+    if (!active || !model[active]) return true;
     const m = model[active];
     const nameEl = root.querySelector('#wf-union-name');
     const fullEl = root.querySelector('#wf-union-full');
+    const rowsHost = root.querySelector('#wf-rows');
+    if (!nameEl && !rowsHost) return false;
     if (nameEl) {
       const nn = String(nameEl.value || '').trim();
       if (nn && nn !== m.name) {           // 改名：把整组搬到新名字下
+        renamed.add(m.name);
         model[nn] = m; delete model[m.name]; m.name = nn; active = nn;
       }
     }
     if (fullEl) m.full = String(fullEl.value || '');
 
     const groups = { 期初: [], 入账: [], 支出: [] };
-    root.querySelectorAll('#wf-rows [data-wf-item]').forEach(tr => {
-      const stage = tr.dataset.wfStage;
-      const item = tr.querySelector('[data-wf-name]').value.trim();
-      const raw = tr.querySelector('[data-wf-amt]').value.trim();
-      const amt = raw === '' ? 0 : Number(raw);
-      if (!groups[stage]) return;
-      groups[stage].push({ item: item || '未命名', amount: Number.isFinite(amt) ? amt : 0 });
-    });
-    m.initial = groups['期初'] || [];
-    m.income = groups['入账'] || [];
-    m.expense = groups['支出'] || [];
+    if (rowsHost) {
+      rowsHost.querySelectorAll('[data-wf-item]').forEach(tr => {
+        const stage = tr.dataset.wfStage;
+        const item = tr.querySelector('[data-wf-name]').value.trim();
+        const raw = tr.querySelector('[data-wf-amt]').value.trim();
+        const amt = raw === '' ? 0 : Number(raw);
+        if (!groups[stage]) return;
+        groups[stage].push({ item: item || '未命名', amount: Number.isFinite(amt) ? amt : 0 });
+      });
+      m.initial = groups['期初'] || [];
+      m.income = groups['入账'] || [];
+      m.expense = groups['支出'] || [];
+    }
 
     const manualCb = root.querySelector('#wf-manual');
     const balEl = root.querySelector('#wf-balance');
@@ -2018,6 +2102,7 @@ async function openFundEditor() {
     } else {
       m.manual = null;
     }
+    return true;
   };
 
   const repaint = (root) => {
@@ -2030,10 +2115,30 @@ async function openFundEditor() {
   };
 
   await showMiniModal('经费瀑布（桥梁）图编辑', shell, async (root) => {
-    collect(root);
+    if (!collect(root)) {
+      toast('编辑面板已失效（可能被其它弹窗覆盖），请关闭后重新打开「瀑布图编辑」', 'error');
+      return false;
+    }
     // 校验：工会名不能为空 / 重名已由 collect 处理
     const bad = Object.keys(model).filter(n => !n.trim());
     if (bad.length) { toast('工会名称不能为空', 'error'); return false; }
+
+    // 第二道保险：工会数量骤减时必须二次确认。
+    // 保存是「整表替换」，一旦 model 少了一个工会，那个工会的期初/入账/支出就全没了；
+    // 主动删的（dropped）和改名的（renamed）不算，剩下的都必须让用户点头。
+    const before = new Set(fundSheetRows()
+      .map(r => String(r[FUND_COLS.union] == null ? '' : r[FUND_COLS.union]).trim())
+      .filter(Boolean));
+    const after = new Set(Object.keys(model).map(n => String(n).trim()).filter(Boolean));
+    const lost = [...before].filter(n => !after.has(n) && !dropped.has(n) && !renamed.has(n));
+    if (lost.length) {
+      const okDel = await confirmDialog(
+        `这次保存会让 ${lost.length} 个工会从瀑布图上消失：${lost.slice(0, 8).join('、')}${lost.length > 8 ? ' 等' : ''}。\n` +
+        '如果确实要删，点「确认」；如果是误操作，点「取消」返回检查。',
+        '确认删除这些工会的经费数据？');
+      if (!okDel) return false;
+    }
+
     setSync('syncing');
     try {
       await DashboardStore.updateSheet(FUND_SHEET, fundModelToRows(model, orphans));
@@ -2077,9 +2182,11 @@ async function openFundEditor() {
       // 删除整个工会
       if (ev.target.closest('#wf-del-union')) {
         if (!active) return;
-        const ok = await confirmDialog(`确认删除工会「${active}」的全部经费科目？该工会会从瀑布图上消失（不影响其它数据表）`, '删除工会');
+        const name = active;
+        const ok = await confirmDialog(`确认删除工会「${name}」的全部经费科目？该工会会从瀑布图上消失（不影响其它数据表）`, '删除工会');
         if (!ok) return;
-        delete model[active];
+        dropped.add(name);
+        delete model[name];
         active = Object.keys(model)[0] || '';
         repaint(root);
         return;

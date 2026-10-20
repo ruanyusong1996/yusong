@@ -794,6 +794,102 @@ class CDP {
   })()`);
   t('新工会在看板瀑布图上立刻出现（7 → 8 行）', unionsNow, 8);
 
+  // ---------- 【E3】回归：瀑布编辑器里「＋ 新增工会」不能把原工会清空 ----------
+  // 真实事故：showMiniModal 当年只有一个 #mini-modal，内层弹窗把外层的 DOM 顶掉，
+  // 外层 onConfirm 在失效 DOM 里读不到 #wf-rows → 把当前工会当成"用户清空了科目"写库，
+  // 表现为「编辑完瀑布图后，工会连同金额一起从看板上消失」。
+  console.log('\n【E3】瀑布编辑器内嵌「新增工会」不能丢原数据');
+  await gotoAdmin();
+  await clickTab('05-经费瀑布', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费瀑布表(嵌套)');
+  const beforeNest = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return { rows: rows.length, unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))] };
+  })()`);
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器(嵌套)');
+  t('打开编辑器时列出全部工会',
+    await cdp.evalJs('document.querySelectorAll(".wf-union-list li[data-wf-union]").length'), beforeNest.unions.length);
+
+  await cdp.evalJs(`document.getElementById('wf-add-union').click()`);
+  await waitFor('!!document.getElementById("u-name")', '嵌套的新增工会弹窗');
+  const nestState = await cdp.evalJs(`(function(){
+    return {
+      layers: document.querySelectorAll('.modal-backdrop:not(.hidden)').length,
+      outerAlive: !document.getElementById('mini-modal').classList.contains('hidden')
+        && !!document.querySelector('#mini-modal-content .wf-wrap'),
+      innerAlive: !!document.getElementById('u-name'),
+    };
+  })()`);
+  t('嵌套时两层弹窗同时存在', nestState.layers, 2);
+  t('嵌套时外层编辑器仍然在（没有被顶掉）', nestState.outerAlive, true);
+  t('嵌套时内层「新增工会」表单可见', nestState.innerAlive, true);
+
+  await cdp.evalJs(`(function(){
+    document.getElementById('u-name').value='E2E嵌套测试工会';
+    document.getElementById('u-initial').value='0';
+    document.getElementById('u-amount').value='';
+    return true;
+  })()`);
+  await cdp.evalJs(`document.querySelector('.mini-layer .mini-ok').click()`);
+  await sleep(1600);
+  const afterNest = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return {
+      rows: rows.length,
+      unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))],
+      outerOpen: !document.getElementById('mini-modal').classList.contains('hidden'),
+    };
+  })()`);
+  const lostNest = beforeNest.unions.filter(n => afterNest.unions.indexOf(n) < 0);
+  console.log('    新增后:', JSON.stringify(afterNest), '丢失:', JSON.stringify(lostNest));
+  t('嵌套新增后原工会一个都没丢', JSON.stringify(lostNest), JSON.stringify([]));
+  t('嵌套新增后外层编辑器仍然开着', afterNest.outerOpen, true);
+  t('新工会已写入（工会数 +1）', afterNest.unions.length, beforeNest.unions.length + 1);
+
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1600);
+  const afterOuterSave = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return { rows: rows.length, unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))] };
+  })()`);
+  const lostSave = beforeNest.unions.filter(n => afterOuterSave.unions.indexOf(n) < 0);
+  console.log('    外层保存后:', JSON.stringify(afterOuterSave), '丢失:', JSON.stringify(lostSave));
+  t('外层保存后原工会仍然一个不少', JSON.stringify(lostSave), JSON.stringify([]));
+  t('外层保存后行数 = 新增前 + 1', afterOuterSave.rows, beforeNest.rows + 1);
+
+  // 主动删除工会仍然要能用（保护逻辑不能把正常删除也拦下来）
+  await cdp.evalJs(`document.getElementById('btn-fund-editor').click()`);
+  await waitFor('!!document.querySelector(".wf-union-list li[data-wf-union]")', '瀑布图编辑器(删除)');
+  await cdp.evalJs(`(function(){
+    const li=[...document.querySelectorAll('.wf-union-list li[data-wf-union]')]
+      .find(x=>x.dataset.wfUnion==='E2E嵌套测试工会');
+    if(!li) return 'NO'; li.click(); return 'OK';
+  })()`);
+  await sleep(400);
+  await cdp.evalJs(`document.getElementById('wf-del-union').click()`);
+  await waitFor('!document.getElementById("confirm-modal").classList.contains("hidden")', '删除确认框');
+  await cdp.evalJs(`document.getElementById('confirm-ok').click()`);
+  await sleep(400);
+  await cdp.evalJs(`document.getElementById('mini-modal-ok').click()`);
+  await sleep(1500);
+  const afterDel = await cdp.evalJs(`(async()=>{
+    const d = await (await fetch('/api/data',{credentials:'include'})).json();
+    const rows = d['05-经费瀑布'].rows;
+    return {
+      unions: [...new Set(rows.map(r=>String(r['工会名称']||'').trim()).filter(Boolean))],
+      confirmStillOpen: !document.getElementById('confirm-modal').classList.contains('hidden'),
+      miniOpen: !document.getElementById('mini-modal').classList.contains('hidden'),
+    };
+  })()`);
+  const lostDel = beforeNest.unions.filter(n => afterDel.unions.indexOf(n) < 0);
+  console.log('    删除后:', JSON.stringify(afterDel), '丢失:', JSON.stringify(lostDel));
+  t('主动删除的工会不会触发「骤减」二次追问', afterDel.confirmStillOpen, false);
+  t('主动删除已生效（该工会从瀑布表移除）', afterDel.unions.indexOf('E2E嵌套测试工会') < 0, true);
+  t('删除一个工会不影响其它工会', JSON.stringify(lostDel), JSON.stringify([]));
+
   // 清理测试数据（E2E 用的是临时数据副本，但保持干净便于反复跑）
   await gotoAdmin();
   const cleaned = await cdp.evalJs(`(async()=>{
