@@ -411,7 +411,7 @@ function waterfallColors(def) {
 function buildWaterfallOption(def, list) {
   const T = theme();
   const c = waterfallColors(def);
-  const decimals = typeof def.decimals === 'number' ? def.decimals : 2;
+  const decimals = typeof def.decimals === 'number' ? def.decimals : 3;
   const fmt = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(decimals);
   const labelShow = !(def.label && def.label.show === false);
   const bw = Number(def.barWidth) || 10;
@@ -423,6 +423,11 @@ function buildWaterfallOption(def, list) {
   const income = list.map(x => x.income);
   const expense = list.map(x => x.expense);
   const balance = list.map(x => x.balance);
+
+  // 单位是「元」以后数字有 6~7 位，右侧要留够宽度，否则最后一根柱的数字会被裁掉
+  const maxAbs = list.reduce((m, x) => Math.max(m, Math.abs(x.initial), Math.abs(x.income), Math.abs(x.expense), Math.abs(x.balance)), 0);
+  const labelChars = String(Math.round(maxAbs)).length + (decimals ? decimals + 1 : 0) + 1;
+  const rightPad = Math.max(60, Math.round(labelChars * 6.6) + 14);
 
   // sign：入账标 "+"、支出标 "−"，一眼看出是增还是减
   const barSeries = (name, color, data, stack, showLabel, sign) => ({
@@ -470,9 +475,9 @@ function buildWaterfallOption(def, list) {
           ['入账', groups.income], ['支出', groups.expense], ['期初', groups.initial], ['结余', groups.balance],
         ].filter(g => g[1].length).map(g => `${g[0]}：${g[1].join('、')}`).slice(0, 3);
         return `<b>${escapeHtml(row.name)}</b><br/>`
-          + `期初 ${fmt(row.initial)} 万元<br/>`
+          + `期初 ${fmt(row.initial)} 元<br/>`
           + `入账 +${fmt(row.income)}　支出 −${fmt(row.expense)}<br/>`
-          + `<b>结余 ${fmt(row.balance)}</b> 万元${row.manual ? '（手工指定）' : '（自动计算）'}`
+          + `<b>结余 ${fmt(row.balance)}</b> 元${row.manual ? '（手工指定）' : '（自动计算）'}`
           + (itemLines.length ? '<br/>' + itemLines.map(escapeHtml).join('<br/>') : '');
       },
     }),
@@ -484,8 +489,8 @@ function buildWaterfallOption(def, list) {
       textStyle: { color: T.text || '#E6EEFF', fontSize: 12 },
       itemWidth: 12, itemHeight: 12,
     } : { show: false },
-    grid: { left: 10, right: 60, top: 24, bottom: legendShow && legendPos === 'bottom' ? 40 : 20, containLabel: true },
-    xAxis: Object.assign({ type: 'value', name: (def.axis && def.axis.yName) || '' }, axisStyle(0), {
+    grid: { left: 10, right: rightPad, top: 24, bottom: legendShow && legendPos === 'bottom' ? 40 : 20, containLabel: true },
+    xAxis: Object.assign({ type: 'value', name: (def.axis && def.axis.yName) || '元' }, axisStyle(0), {
       nameTextStyle: { color: T.muted || '#7E93BD' },
     }),
     yAxis: Object.assign({ type: 'category', data: names, inverse: true }, axisStyle(0), {

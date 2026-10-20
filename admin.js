@@ -19,8 +19,11 @@ const SHEET_ICON = {
 /** 瀑布（桥梁）图专用表：一行 = 某个工会的一个科目（期初/入账/支出/结余） */
 const FUND_SHEET = '05-经费瀑布';
 /** 该表固定使用的列名（后台编辑与看板渲染都按这套来） */
-const FUND_COLS = { union: '工会名称', full: '工会全称', stage: '收支类型', item: '经费项目', amount: '金额（万元）', note: '备注' };
+const FUND_COLS = { union: '工会名称', full: '工会全称', stage: '收支类型', item: '经费项目', amount: '金额（元）', note: '备注' };
 const FUND_STAGES = ['期初', '入账', '支出', '结余'];
+/** 瀑布表金额统一按「元」，显示/录入保留 3 位小数 */
+const FUND_DECIMALS = 3;
+const fundMoney = v => (Number.isFinite(Number(v)) ? Number(v).toFixed(FUND_DECIMALS) : (0).toFixed(FUND_DECIMALS));
 
 let currentTab = SHEETS[0];
 let DATA = null;
@@ -226,14 +229,24 @@ function renderTable() {
   info.textContent = `共 ${rows.length} 条${q ? ` · 筛选 ${filtered.length} 条` : ''}`;
 }
 
-// ============ 数字输入：最多 2 位小数（也允许整数）============
+// ============ 数字输入：默认最多 2 位小数（字段可单独指定，如瀑布表用 3 位）============
 const NUM_MAX_DECIMALS = 2;
-/** 合法数字：整数，或最多 2 位小数（可选负号，仅当字段允许负数） */
-const NUM_PATTERN = /^-?\d+(\.\d{1,2})?$/;
+/** 字段允许的小数位：schema 里写了 decimals 就按它来，没写用全局默认 2 位 */
+function decimalsOf(def) {
+  const d = def && def.decimals;
+  return (typeof d === 'number' && d >= 0 && d <= 6) ? d : NUM_MAX_DECIMALS;
+}
+/** 合法数字：整数，或最多 n 位小数（可选负号） */
+function numPattern(decimals) {
+  const d = Math.max(0, Math.min(6, Number(decimals) || 0));
+  return d > 0 ? new RegExp(`^-?\\d+(\\.\\d{1,${d}})?$`) : /^-?\d+$/;
+}
+const NUM_PATTERN = numPattern(NUM_MAX_DECIMALS);
 
-/** 实时闸门：拦截非法字符与第 3 位小数，支持粘贴自动清洗（全角/千分位等） */
+/** 实时闸门：拦截非法字符与超位数小数，支持粘贴自动清洗（全角/千分位等） */
 function attachNumberGuard(input, def) {
   const allowNegative = !(typeof def.min === 'number' && def.min >= 0);
+  const maxDec = decimalsOf(def);
 
   function sanitize(raw) {
     let s = String(raw == null ? '' : raw);
@@ -245,12 +258,12 @@ function attachNumberGuard(input, def) {
     // 负号：只保留开头一个，且字段允许负数时才保留
     const wantNeg = allowNegative && s.charAt(0) === '-';
     s = s.replace(/-/g, '');
-    // 只保留第一个小数点，且小数部分最多 2 位
+    // 只保留第一个小数点，且小数部分最多 maxDec 位
     const dot = s.indexOf('.');
     if (dot !== -1) {
       s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
       const parts = s.split('.');
-      s = parts[0] + '.' + (parts[1] || '').slice(0, NUM_MAX_DECIMALS);
+      s = parts[0] + '.' + (parts[1] || '').slice(0, maxDec);
     }
     return (wantNeg ? '-' : '') + s;
   }
@@ -319,7 +332,7 @@ function openEditor(mode, index) {
       input.type = 'text';
       input.inputMode = 'decimal';
       input.autocomplete = 'off';
-      input.placeholder = def.placeholder || '最多 2 位小数，如 12 或 12.34';
+      input.placeholder = def.placeholder || `最多 ${decimalsOf(def)} 位小数（也可以是整数）`;
       input.value = (value === '' || value === undefined || value === null) ? '' : String(value);
       attachNumberGuard(input, def);
     } else {
@@ -366,13 +379,13 @@ async function submitEditor(e) {
     if (def.type === 'number') {
       const raw = String(val == null ? '' : val).trim();
       // 没动过的字段不校验格式：历史数据（如经费瀑布表由经费收支表自动带入的金额）
-      // 可能带着 4 位小数，用户只是改同一行的其它格子，不该被拦下来。
+      // 可能带着更多位小数，用户只是改同一行的其它格子，不该被拦下来。
       const original = mode === 'edit' ? sheet.rows[editIndex][field] : undefined;
       const untouched = original !== undefined && original !== null && String(original) === raw;
       if (raw === '') {
         val = '';
-      } else if (!NUM_PATTERN.test(raw) && !untouched) {
-        toast(`「${field}」格式不对：只能填数字，且小数点后最多 2 位`, 'error');
+      } else if (!numPattern(decimalsOf(def)).test(raw) && !untouched) {
+        toast(`「${field}」格式不对：只能填数字，且小数点后最多 ${decimalsOf(def)} 位`, 'error');
         el.focus();
         return;
       } else {
@@ -1656,7 +1669,7 @@ async function promptEditChart(idx) {
     if (next.type === 'waterfall') {
       if (!next.stageField) next.stageField = '收支类型';
       if (!next.itemField) next.itemField = '经费项目';
-      if (!next.field) next.field = '金额（万元）';
+      if (!next.field) next.field = '金额（元）';
     }
     if (!next.detail) next.detail = {};
     CFG = collectConfigFromPanel();
@@ -1868,7 +1881,7 @@ function fundItemRowHtml(stage, it, i) {
 
 function fundUnionPanelHtml(m) {
   const b = fundBalanceOf(m);
-  const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '0.00');
+  const fmt = fundMoney;
   const rows = []
     .concat((m.initial || []).map((it, i) => fundItemRowHtml('期初', it, i)))
     .concat((m.income || []).map((it, i) => fundItemRowHtml('入账', it, i)))
@@ -1881,7 +1894,7 @@ function fundUnionPanelHtml(m) {
       <button class="mini-btn danger" type="button" id="wf-del-union">删除该工会</button>
     </div>
     <table class="wf-table">
-      <thead><tr><th style="width:70px">阶段</th><th>项目</th><th style="width:120px">金额（万元）</th><th style="width:40px"></th></tr></thead>
+      <thead><tr><th style="width:70px">阶段</th><th>项目</th><th style="width:150px">金额（元）</th><th style="width:40px"></th></tr></thead>
       <tbody id="wf-rows">${rows || '<tr class="wf-empty"><td colspan="4">（还没有科目，点下面按钮添加）</td></tr>'}</tbody>
     </table>
     <div class="wf-add-row">
@@ -1893,11 +1906,11 @@ function fundUnionPanelHtml(m) {
       <span>期初 <b>${fmt(b.initial)}</b></span>
       <span>＋ 入账 <b class="wf-in-text">${fmt(b.income)}</b></span>
       <span>－ 支出 <b class="wf-out-text">${fmt(b.expense)}</b></span>
-      <span>＝ 结余 <b class="wf-bal-text">${fmt(b.balance)}</b> 万元</span>
+      <span>＝ 结余 <b class="wf-bal-text">${fmt(b.balance)}</b> 元</span>
       <label class="wf-manual"><input type="checkbox" id="wf-manual" ${m.manual !== null ? 'checked' : ''}/> 手工指定结余</label>
       <input type="text" inputmode="decimal" id="wf-balance" class="wf-item-amt" value="${m.manual === null ? '' : m.manual}" ${m.manual === null ? 'disabled' : ''} />
     </div>
-    <p class="cfg-hint">结余默认自动计算（期初＋入账－支出）。勾「手工指定」可强行填写（例如账实不符需要手工平账）。金额单位：万元，最多 2 位小数。</p>
+    <p class="cfg-hint">结余默认自动计算（期初＋入账－支出）。勾「手工指定」可强行填写（例如账实不符需要手工平账）。金额单位：元，最多 3 位小数。</p>
   `;
 }
 
@@ -1917,26 +1930,27 @@ function fundCrossCheckHtml(model) {
   let ref = null;
   if (fund && Array.isArray(fund.rows)) {
     const H = fund.headers || [];
-    const hasCol = H.indexOf('当前结余（万元）') >= 0 || H.indexOf('当前结余（元）') >= 0;
+    const hasCol = H.indexOf('当前结余（元）') >= 0 || H.indexOf('当前结余（万元）') >= 0;
     if (hasCol) {
+      // 瀑布表是「元」，这里也统一折算成元再比（优先用「当前结余（元）」这一列，精度最高）
       ref = fund.rows.reduce((s, r) => {
-        const w = num(DashboardStore.pickValue(r, H, '当前结余（万元）'));
-        if (w !== null) return s + w;
         const y = num(DashboardStore.pickValue(r, H, '当前结余（元）'));
-        return s + (y !== null ? y / 10000 : 0);
+        if (y !== null) return s + y;
+        const w = num(DashboardStore.pickValue(r, H, '当前结余（万元）'));
+        return s + (w !== null ? w * 10000 : 0);
       }, 0);
     }
   }
-  const f2 = v => Number(v).toFixed(2);
+  const f2 = fundMoney;
   if (ref === null) {
-    return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 万元</span>`;
+    return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 元</span>`;
   }
   const diff = sum - ref;
-  const bad = Math.abs(diff) > 0.011;
-  return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 万元</span>`
-    + `<span>「04-经费收支」结余合计 <b>${f2(ref)}</b> 万元</span>`
+  const bad = Math.abs(diff) > 1;   // 元：留 1 元容差（历史数据按 1 元取整）
+  return `<span>全部工会结余合计 <b class="wf-bal-text">${f2(sum)}</b> 元</span>`
+    + `<span>「04-经费收支」结余合计 <b>${f2(ref)}</b> 元</span>`
     + (bad
-      ? `<span class="wf-diff">⚠ 相差 ${f2(Math.abs(diff))} 万元，建议核对（否则看板上两张图的数字会不一致）</span>`
+      ? `<span class="wf-diff">⚠ 相差 ${f2(Math.abs(diff))} 元，建议核对（否则看板上两张图的数字会不一致）</span>`
       : `<span class="wf-ok">✓ 与经费收支表一致</span>`);
 }
 
@@ -1947,7 +1961,7 @@ function fundSideHtml(model, active) {
     const b = fundBalanceOf(model[n]);
     return `<li data-wf-union="${escapeHtml(n)}" class="${n === active ? 'active' : ''}">
       <span class="wf-union-name">${escapeHtml(n)}</span>
-      <span class="wf-union-bal">${Number(b.balance).toFixed(2)}</span>
+      <span class="wf-union-bal">${fundMoney(b.balance)}</span>
     </li>`;
   }).join('')}</ul>`;
 }
@@ -2010,7 +2024,7 @@ async function openFundEditor() {
     root.querySelector('#wf-side-list').innerHTML = fundSideHtml(model, active);
     const main = root.querySelector('#wf-main');
     main.innerHTML = active && model[active] ? fundUnionPanelHtml(model[active]) : '<p class="cfg-empty">请先在左侧新增工会</p>';
-    main.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, {}));
+    main.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, { decimals: FUND_DECIMALS }));
     const cross = root.querySelector('#wf-cross');
     if (cross) cross.innerHTML = fundCrossCheckHtml(model);
   };
@@ -2055,7 +2069,7 @@ async function openFundEditor() {
         host.querySelectorAll('.wf-empty').forEach(x => x.remove());
         const n = host.querySelectorAll('[data-wf-item]').length;
         host.insertAdjacentHTML('beforeend', fundItemRowHtml(stage, { item: '', amount: 0 }, n));
-        host.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, {}));
+        host.querySelectorAll('.wf-item-amt').forEach(inp => attachNumberGuard(inp, { decimals: FUND_DECIMALS }));
         const last = host.querySelector(`[data-wf-item="${n}"] [data-wf-name]`);
         if (last) last.focus();
         return;
@@ -2092,7 +2106,7 @@ async function openFundEditor() {
       if (ev.target.checked) {
         collect(root);
         const m = model[active];
-        bal.value = m ? Number(fundBalanceOf(m).balance).toFixed(2) : '';
+        bal.value = m ? fundMoney(fundBalanceOf(m).balance) : '';
         bal.focus();
       }
     });
@@ -2116,13 +2130,13 @@ async function promptAddUnion() {
       <label class="form-field">依托公司<input type="text" id="u-company" placeholder="选填，默认同工会全称" /></label>
       <label class="form-field">工会级别<select id="u-level">${levelOpts.map(o => `<option value="${escapeHtml(o)}" ${o === '三级工会' ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
       <label class="form-field">组建状态<select id="u-status">${statusOpts.map(o => `<option value="${escapeHtml(o)}" ${o === '已组建' ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
-      <label class="form-field">期初金额（万元）<input type="text" inputmode="decimal" id="u-initial" value="0" /></label>
+      <label class="form-field">期初金额（元）<input type="text" inputmode="decimal" id="u-initial" value="0" /></label>
       <label class="form-field">首笔入账项目<select id="u-proj">${projOpts.map(o => `<option value="${escapeHtml(o)}" ${o === defaultProj ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
-      <label class="form-field">首笔入账金额（万元，可留空）<input type="text" inputmode="decimal" id="u-amount" value="" /></label>
+      <label class="form-field">首笔入账金额（元，可留空）<input type="text" inputmode="decimal" id="u-amount" value="" /></label>
       <label class="form-field check full"><input type="checkbox" id="u-to-org" checked /> 同时登记到「一、组织建设」表（工会总数 / 组建率等指标会同步更新）</label>
       <label class="form-field check full"><input type="checkbox" id="u-to-fund" checked /> 同时登记到「05-经费瀑布」表（瀑布图上立刻出现这一行）</label>
     </div>
-    <p class="cfg-hint">金额单位：万元，最多 2 位小数。建好后可随时在「🌉 瀑布图编辑」里补录更多入账/支出项目。</p>`;
+    <p class="cfg-hint">金额单位：元，最多 3 位小数。建好后可随时在「🌉 瀑布图编辑」里补录更多入账/支出项目。</p>`;
 
   let created = null;
   await showMiniModal('新增工会组织', html, async (root) => {
@@ -2138,8 +2152,8 @@ async function promptAddUnion() {
     const toOrg = root.querySelector('#u-to-org').checked;
     const toFund = root.querySelector('#u-to-fund').checked;
 
-    if (initialRaw && !NUM_PATTERN.test(initialRaw)) { toast('期初金额最多 2 位小数', 'error'); return false; }
-    if (amountRaw && !NUM_PATTERN.test(amountRaw)) { toast('入账金额最多 2 位小数', 'error'); return false; }
+    if (initialRaw && !numPattern(FUND_DECIMALS).test(initialRaw)) { toast(`期初金额最多 ${FUND_DECIMALS} 位小数`, 'error'); return false; }
+    if (amountRaw && !numPattern(FUND_DECIMALS).test(amountRaw)) { toast(`入账金额最多 ${FUND_DECIMALS} 位小数`, 'error'); return false; }
 
     // 重名检查（瀑布表里已经有这个工会就没必要再建）
     const exists = fundSheetRows().some(r => String(r[FUND_COLS.union] || '').trim() === name);
@@ -2192,7 +2206,7 @@ async function promptAddUnion() {
   }, (root) => {
     ['#u-initial', '#u-amount'].forEach(sel => {
       const el = root.querySelector(sel);
-      if (el) attachNumberGuard(el, {});
+      if (el) attachNumberGuard(el, { decimals: FUND_DECIMALS });
     });
   });
   if (created) refreshAll();
@@ -2254,7 +2268,7 @@ function validateConfig(cfg) {
     // 瀑布（桥梁）图缺了阶段/金额列就画不出任何柱子，直接拦住
     if (c.type === 'waterfall') {
       if (!c.groupBy) errs.push(`瀑布图「${c.id}」未选择分组字段（一般是「工会名称」，决定图上每一行）`);
-      if (!c.field) errs.push(`瀑布图「${c.id}」未选择金额字段（一般是「金额（万元）」）`);
+      if (!c.field) errs.push(`瀑布图「${c.id}」未选择金额字段（一般是「金额（元）」）`);
       if (!c.stageField) errs.push(`瀑布图「${c.id}」未选择阶段字段（值应为 期初 / 入账 / 支出 / 结余）`);
     }
   });

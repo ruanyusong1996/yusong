@@ -49,7 +49,7 @@ const CE = globalThis.ConfigEngine || {};
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -325,7 +325,7 @@ function ensureSheets(data) {
   if (!data['05-经费瀑布'] && data['04-经费收支'] && typeof CE.deriveWaterfallRows === 'function') {
     const objs = CE.deriveWaterfallRows(data['04-经费收支'], '工会名称');
     const headers = (seed['05-经费瀑布'] && seed['05-经费瀑布'].headers)
-      || ['序号', '工会名称', '工会全称', '收支类型', '经费项目', '金额（万元）', '备注'];
+      || ['序号', '工会名称', '工会全称', '收支类型', '经费项目', '金额（元）', '备注'];
     const H = data['04-经费收支'].headers || [];
     const idx = n => H.indexOf(n);
     const fullMap = new Map();
@@ -336,7 +336,7 @@ function ensureSheets(data) {
     });
     const rows = objs.map((o, i) => [
       i + 1, o['工会名称'], fullMap.get(o['工会名称']) || '',
-      o['收支类型'], o['经费项目'], o['金额（万元）'], o['备注'] || '',
+      o['收支类型'], o['经费项目'], o['金额（元）'], o['备注'] || '',
     ]);
     data['05-经费瀑布'] = {
       title: '各工会经费收支瀑布（桥梁）',
@@ -345,6 +345,9 @@ function ensureSheets(data) {
     };
     changed = true;
   }
+
+  // 单位迁移：老数据的瀑布表金额是「万元」，新版本统一按「元」（幂等）
+  if (typeof CE.migrateWaterfallUnit === 'function' && CE.migrateWaterfallUnit(data)) changed = true;
 
   if (changed) console.log('[ensureSheets] 已为现有数据补齐缺失的数据表');
   return data;
@@ -441,8 +444,27 @@ function normalizeConfig(cfg) {
     if (c.type !== 'waterfall') return;
     if (!c.stageField) { c.stageField = '收支类型'; warnings.push(`瀑布图「${c.id || ''}」缺少阶段字段，已回退为「收支类型」`); }
     if (!c.itemField) c.itemField = '经费项目';
-    if (!c.field) { c.field = '金额（万元）'; warnings.push(`瀑布图「${c.id || ''}」缺少金额字段，已回退为「金额（万元）」`); }
+    // 金额列已统一为「元」，老配置里还写着「金额（万元）」的自动改过来
+    if (!c.field || c.field === '金额（万元）') c.field = '金额（元）';
   });
+
+  // 2.6) 金额单位迁移（万元 → 元）：只跑一次，靠 cfg.unitsVersion 记账，
+  //      这样用户之后在后台把小数位改回 2 位，不会每次读配置又被改回 3 位。
+  if (!(Number(cfg.unitsVersion) >= 2)) {
+    (cfg.charts || []).forEach(c => {
+      if (c.type !== 'waterfall') return;
+      if (typeof c.decimals !== 'number' || c.decimals === 2) c.decimals = 3;
+      if (!c.axis) c.axis = {};
+      if (!c.axis.yName || c.axis.yName === '万元') c.axis.yName = '元';
+    });
+    const wfIds = new Set((cfg.charts || []).filter(c => c.type === 'waterfall').map(c => c.id));
+    (cfg.modules || []).forEach(m => (m.columns || []).forEach(col => (col.blocks || []).forEach(b => {
+      if (b.refId && wfIds.has(b.refId) && typeof b.title === 'string' && b.title.indexOf('万元') >= 0) {
+        b.title = b.title.replace(/（万元）/g, '（元）');
+      }
+    })));
+    cfg.unitsVersion = 2;
+  }
 
   // 3) 悬空引用（只提示、不擅自删除，避免掩盖真实配置问题）
   const metricIds = new Set((cfg.metrics || []).map(m => m.id));
@@ -932,6 +954,23 @@ app.use((_req, res) => res.status(404).json({ error: 'not found' }));
 ensureDir();
 
 const dataState = ensureDataFile();
+
+// 金额单位迁移（万元 → 元）：直接读磁盘上的真数据，改了就立刻落盘。
+// 幂等：表头已经是「金额（元）」时 CE.migrateWaterfallUnit 直接返回 false，
+// 所以重启多少次都不会把数字反复 ×10000。
+(function migrateUnitsOnBoot() {
+  const raw = readJsonSafe(DATA_FILE);
+  if (!raw || typeof CE.migrateWaterfallUnit !== 'function') return;
+  try {
+    if (!CE.migrateWaterfallUnit(raw)) return;
+    writeJsonAtomic(DATA_FILE, raw, 'unit-yuan')
+      .then(() => console.log('[migrate] 05-经费瀑布 金额单位已换算为「元」并写入磁盘'))
+      .catch(e => console.error('[migrate] 单位迁移写盘失败:', e && e.message));
+  } catch (e) {
+    console.error('[migrate] 单位迁移失败:', e && e.message);
+  }
+})();
+
 const configState = ensureConfigFile();
 ensureManagedFile(AUTH_FILE, null, '密码');
 const authExisted = fs.existsSync(AUTH_FILE);

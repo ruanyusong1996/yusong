@@ -342,11 +342,30 @@
   // 瀑布（桥梁）图：期初 → 入账 → 支出 → 结余
   // ---------------------------------------------------------------------
   // 数据表是「长表」：一行 = 某个工会的某个科目
-  //   工会名称 | 收支类型(期初/入账/支出/结余) | 经费项目 | 金额（万元）
+  //   工会名称 | 收支类型(期初/入账/支出/结余) | 经费项目 | 金额（元）
   // 同一个收支类型可以有多行（多个入账项目、多个支出项目），自动累加。
   // 「结余」类型的行是手工指定值；没有这类行时结余 = 期初 + 入账 - 支出。
+  // 金额统一按「元」返回：万一数据表还是老版本的「金额（万元）」，这里自动 ×10000。
 
   const DEFAULT_STAGES = { initial: '期初', income: '入账', expense: '支出', balance: '结余' };
+
+  /**
+   * 找出瀑布表里存金额的那一列，以及换算成「元」的乘数。
+   * 优先用图表配置里指定的列；配置写的列不存在（比如老配置还写着万元、表已升级为元）时
+   * 按表头自动兜底，避免整张图因为一个列名对不上而变成空白。
+   */
+  function resolveValueField(headers, def) {
+    const H = headers || [];
+    const candidates = [];
+    if (def && def.field) candidates.push(def.field);
+    candidates.push('金额（元）', '金额（万元）', '金额');
+    for (let i = 0; i < candidates.length; i++) {
+      const f = candidates[i];
+      if (!f || H.indexOf(f) < 0) continue;
+      return { field: f, scale: /万元/.test(f) ? 10000 : 1 };
+    }
+    return { field: (def && def.field) || '金额（元）', scale: 1 };
+  }
 
   /** 阶段名 → initial / income / expense / balance；认不出来返回 null */
   function stageOf(value, def) {
@@ -376,7 +395,8 @@
     const groupBy = (def && def.groupBy) || '工会名称';
     const stageField = (def && def.stageField) || '收支类型';
     const itemField = (def && def.itemField) || '经费项目';
-    const valueField = (def && def.field) || '金额（万元）';
+    const vf = resolveValueField(headers, def);
+    const valueField = vf.field;
     const map = new Map();
 
     rows.forEach(r => {
@@ -384,7 +404,7 @@
       if (!stage) return;
       const key = String(pick(r, headers, groupBy) == null ? '' : pick(r, headers, groupBy)).trim() || '（空）';
       const num = toNum(pick(r, headers, valueField));
-      const v = num === null ? 0 : num;
+      const v = (num === null ? 0 : num) * vf.scale;
       let o = map.get(key);
       if (!o) {
         o = { name: key, initial: 0, income: 0, expense: 0, balanceManual: null, items: [] };
@@ -436,19 +456,23 @@
       const type = String(pick(r, headers, '收支类型') == null ? '' : pick(r, headers, '收支类型'));
       const proj = String(pick(r, headers, '经费项目') == null ? '' : pick(r, headers, '经费项目')) || '未分类';
 
-      const initYuan = toNum(pick(r, headers, '年初金额'));
+      // 经费收支表里「年初金额 / 支出金额 / 当前结余（元）」本身就是元；
+      // 只有带（万元）后缀的列才 ×10000，绝不猜。
+      const initYuan = toNum(pick(r, headers, '年初金额（元）'));
+      const init = initYuan !== null ? initYuan : toNum(pick(r, headers, '年初金额'));
       const initWan = toNum(pick(r, headers, '年初金额（万元）'));
-      if (initWan !== null) o.initial += initWan;
-      else if (initYuan !== null) o.initial += initYuan / YUAN;
+      if (init !== null) o.initial += init;
+      else if (initWan !== null) o.initial += initWan * YUAN;
 
-      const outYuan = toNum(pick(r, headers, '支出金额'));
+      const outYuan = toNum(pick(r, headers, '支出金额（元）'));
+      const out = outYuan !== null ? outYuan : toNum(pick(r, headers, '支出金额'));
       const outWan = toNum(pick(r, headers, '支出金额（万元）'));
-      if (outWan !== null) o.expense += Math.abs(outWan);
-      else if (outYuan !== null) o.expense += Math.abs(outYuan) / YUAN;
+      if (out !== null) o.expense += Math.abs(out);
+      else if (outWan !== null) o.expense += Math.abs(outWan) * YUAN;
 
-      const balWan = toNum(pick(r, headers, '当前结余（万元）'));
       const balYuan = toNum(pick(r, headers, '当前结余（元）'));
-      let bal = balWan !== null ? balWan : (balYuan !== null ? balYuan / YUAN : null);
+      const balWan = toNum(pick(r, headers, '当前结余（万元）'));
+      let bal = balYuan !== null ? balYuan : (balWan !== null ? balWan * YUAN : null);
       if (bal !== null && /收入|拨入|反拨/.test(type)) {
         o.income += bal;
         o.items.push({ stage: 'income', item: proj, value: bal });
@@ -457,23 +481,76 @@
 
     const out = [];
     [...map.entries()].forEach(([name, o]) => {
-      // 保留 4 位小数：与经费收支表「当前结余（万元）」的精度一致，
-      // 否则各工会四舍五入后的合计会和看板上的「当前结余」指标差出几分钱。
-      const r4 = v => Math.round(v * 10000) / 10000;
+      // 保留 2 位小数（0.01 元）：与经费收支表「元」列的精度一致
+      const r2 = v => Math.round(v * 100) / 100;
       // 期初行总是生成（哪怕为 0），方便后台直接改金额，不用先新增行
-      out.push({ 工会名称: name, 收支类型: '期初', 经费项目: '上年结转', '金额（万元）': r4(o.initial), 备注: '由经费收支表年初金额自动带入，请核对' });
+      out.push({ 工会名称: name, 收支类型: '期初', 经费项目: '上年结转', '金额（元）': r2(o.initial), 备注: '由经费收支表年初金额自动带入，请核对' });
       if (o.income) {
         const byItem = new Map();
         o.items.filter(i => i.stage === 'income').forEach(i => {
           byItem.set(i.item, (byItem.get(i.item) || 0) + i.value);
         });
         [...byItem.entries()].forEach(([item, v]) => {
-          out.push({ 工会名称: name, 收支类型: '入账', 经费项目: item, '金额（万元）': r4(v), 备注: '由经费收支表收入记录自动带入' });
+          out.push({ 工会名称: name, 收支类型: '入账', 经费项目: item, '金额（元）': r2(v), 备注: '由经费收支表收入记录自动带入' });
         });
       }
-      if (o.expense) out.push({ 工会名称: name, 收支类型: '支出', 经费项目: '经费支出', '金额（万元）': r4(o.expense), 备注: '由经费收支表支出金额自动带入' });
+      if (o.expense) out.push({ 工会名称: name, 收支类型: '支出', 经费项目: '经费支出', '金额（元）': r2(o.expense), 备注: '由经费收支表支出金额自动带入' });
     });
     return out;
+  }
+
+  /**
+   * 单位迁移（v1.4）：把「05-经费瀑布」的金额列从「万元」换成「元」。
+   * 幂等：表头已经是「金额（元）」就当没事发生。
+   *
+   * 换算不是简单的 ×10000：老列只存了 4 位小数的万元（＝1 元的精度），
+   * 4.0891 万元 直接乘会变成 40891.00 元，而经费收支表里其实是 40891.19 元。
+   * 所以先用经费收支表「元」列重算一遍，只有在老值与该重算值吻合（说明这行没被手工改过）
+   * 时才采用精确值；对不上的一律按 ×10000 处理 —— 绝不用推导值覆盖用户手改的数字。
+   */
+  function migrateWaterfallUnit(data) {
+    const sheet = data && data['05-经费瀑布'];
+    if (!sheet || !Array.isArray(sheet.headers) || !Array.isArray(sheet.rows)) return false;
+    const H = sheet.headers;
+    const idx = H.indexOf('金额（万元）');
+    if (idx < 0) return false;
+
+    const iName = H.indexOf('工会名称');
+    const iStage = H.indexOf('收支类型');
+    const iItem = H.indexOf('经费项目');
+    let exact = null;
+    if (data['04-经费收支'] && iName >= 0 && iStage >= 0 && iItem >= 0) {
+      try {
+        exact = new Map();
+        deriveWaterfallRows(data['04-经费收支'], '工会名称').forEach(o => {
+          exact.set([o['工会名称'], o['收支类型'], o['经费项目']].join('\u0001'), Number(o['金额（元）']) || 0);
+        });
+      } catch (_) { exact = null; }
+    }
+
+    let exactRows = 0;
+    sheet.rows.forEach(r => {
+      if (!Array.isArray(r)) return;
+      const wan = Number(r[idx]);
+      if (!Number.isFinite(wan)) return;
+      if (exact) {
+        const key = [r[iName], r[iStage], r[iItem]]
+          .map(x => String(x == null ? '' : x).trim()).join('\u0001');
+        const ex = exact.get(key);
+        // 把精确值折回 4 位小数的万元，和老值一致 ⇒ 这行没被手改
+        if (ex !== undefined && Math.abs(Math.round(ex) / 10000 - wan) < 1e-6) {
+          r[idx] = ex;
+          exactRows++;
+          return;
+        }
+      }
+      r[idx] = Math.round(wan * YUAN * 100) / 100;
+    });
+
+    H[idx] = '金额（元）';
+    data._meta = Object.assign({}, data._meta || {}, { waterfallUnit: 'yuan' });
+    console.log(`[migrate] 05-经费瀑布 金额单位 万元→元（${sheet.rows.length} 行，其中 ${exactRows} 行用经费表的元值精确还原）`);
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -576,6 +653,7 @@
     OPS, OP_LABEL, AGG_LABEL,
     // 瀑布（桥梁）图
     DEFAULT_STAGES, stageOf, waterfallRows, deriveWaterfallRows,
+    resolveValueField, migrateWaterfallUnit,
     // 配置升级（把模板新增项补进已有配置）
     mergeAdditions,
   };

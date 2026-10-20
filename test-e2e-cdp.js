@@ -641,6 +641,7 @@ class CDP {
     const r2 = v => Math.round(v*100)/100;
     return {
       hasChart:true, sheet: ch.sheet, stageField: ch.stageField, field: ch.field,
+      decimals: ch.decimals, yName: (ch.axis && ch.axis.yName) || '',
       unions: rows.length,
       balanceSum: r2(rows.reduce((s,r)=>s+r.balance,0)),
       anyManual: rows.some(r=>r.manual),
@@ -652,8 +653,11 @@ class CDP {
   t('瀑布图数据表 = 05-经费瀑布', wf.sheet, '05-经费瀑布');
   t('阶段字段 = 收支类型（期初/入账/支出/结余）', wf.stageField, '收支类型');
   t('每个工会单独一行（7 个工会）', wf.unions, 7);
-  t('结余合计 66.75 万元（与看板「当前结余」指标一致）', wf.balanceSum, 66.75);
+  t('结余合计 667538.25 元（= 66.753825 万元，与看板「当前结余」指标一致）', wf.balanceSum, 667538.25);
   t('结余默认自动计算（不是手工指定）', wf.anyManual, false);
+  t('金额字段 = 金额（元）', wf.field, '金额（元）');
+  t('坐标轴单位 = 元', wf.yName, '元');
+  t('数值保留 3 位小数', wf.decimals, 3);
 
   const wfDom = await cdp.evalJs(`(function(){
     const secs=[...document.querySelectorAll('#modules-root > section')];
@@ -714,6 +718,7 @@ class CDP {
   t('选中工会的科目行可编辑（期初/入账各 1 行）', ed.items, 2);
   t('提供「＋添加入账项 / ＋添加支出项」', ed.addIncome && ed.addExpense, true);
   t('实时给出 期初＋入账－支出＝结余', /期初[\s\S]*入账[\s\S]*支出[\s\S]*结余/.test(ed.sumText), true);
+  t('编辑器金额单位已改为「元」', /结余[\s\S]*元/.test(ed.sumText), true);
   t('弹窗内容区可滚动（overflow-y:auto，不会被裁掉）', ed.overflowY, 'auto');
 
   // 加一个支出项并保存 → 结余应该相应减少
@@ -733,7 +738,7 @@ class CDP {
     const rows = d['05-经费瀑布'].rows;
     const mine = rows.filter(r=>String(r['经费项目']||'').indexOf('E2E')>=0);
     const CE = window.ConfigEngine;
-    const all = CE.waterfallRows(d['05-经费瀑布'], {groupBy:'工会名称', stageField:'收支类型', field:'金额（万元）'});
+    const all = CE.waterfallRows(d['05-经费瀑布'], {groupBy:'工会名称', stageField:'收支类型', field:'金额（元）'});
     return { total: rows.length, added: mine.length, stage: mine[0] ? mine[0]['收支类型'] : '', unions: all.length };
   })()`);
   console.log('    ', JSON.stringify(wfSaved), '改前结余=', balBefore);
@@ -772,7 +777,7 @@ class CDP {
     const d = await (await fetch('/api/data',{credentials:'include'})).json();
     const wf = d['05-经费瀑布'].rows.filter(r=>r['工会名称']==='E2E测试工会');
     const org = d['01-组织建设'].rows.filter(r=>r['工会名称']==='E2E测试工会');
-    return { wf: wf.length, org: org.length, stages: wf.map(r=>r['收支类型']), amounts: wf.map(r=>r['金额（万元）']) };
+    return { wf: wf.length, org: org.length, stages: wf.map(r=>r['收支类型']), amounts: wf.map(r=>r['金额（元）']) };
   })()`);
   console.log('    ', JSON.stringify(added));
   t('新增工会写进瀑布表（期初 + 入账 两行）', added.wf, 2);

@@ -108,7 +108,7 @@
         options: ['上年结转', '上级工会反拨', '会员会费', '其他收入', '活动支出', '慰问支出', '培训支出', '其他支出'],
         required: true,
       },
-      '金额（万元）': { type: 'number' },
+      '金额（元）': { type: 'number', decimals: 3 },
       '备注': { type: 'textarea', full: true },
     },
   };
