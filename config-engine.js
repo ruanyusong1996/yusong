@@ -501,23 +501,37 @@
 
   /**
    * 单位迁移（v1.4）：把「05-经费瀑布」的金额列从「万元」换成「元」。
-   * 幂等：表头已经是「金额（元）」就当没事发生。
+   * 幂等：表头已经是「金额（元）」且没有残留旧列名的行，就当没事发生。
    *
    * 换算不是简单的 ×10000：老列只存了 4 位小数的万元（＝1 元的精度），
    * 4.0891 万元 直接乘会变成 40891.00 元，而经费收支表里其实是 40891.19 元。
    * 所以先用经费收支表「元」列重算一遍，只有在老值与该重算值吻合（说明这行没被手工改过）
    * 时才采用精确值；对不上的一律按 ×10000 处理 —— 绝不用推导值覆盖用户手改的数字。
+   *
+   * ⚠️ 行有两种形态：服务器落地的是数组行（按 headers 顺序），
+   * 但经过后台编辑保存的数据是**对象行**（key 就是列名）。以前只处理数组行，
+   * 结果对象行一个都没换算，图表直接全变 0。这里两种都要认。
    */
+  const OLD_AMOUNT_FIELD = '金额（万元）';
+  const NEW_AMOUNT_FIELD = '金额（元）';
+
   function migrateWaterfallUnit(data) {
     const sheet = data && data['05-经费瀑布'];
     if (!sheet || !Array.isArray(sheet.headers) || !Array.isArray(sheet.rows)) return false;
     const H = sheet.headers;
-    const idx = H.indexOf('金额（万元）');
-    if (idx < 0) return false;
+    const headOld = H.indexOf(OLD_AMOUNT_FIELD);
+    const headNew = H.indexOf(NEW_AMOUNT_FIELD);
+    if (headOld < 0 && headNew < 0) return false;
+
+    // 已经切成「元」的表头，但还有行停留在旧列名上（后台改列名 / 老数据混存）
+    const hasStaleRows = sheet.rows.some(r => r && !Array.isArray(r) && r[OLD_AMOUNT_FIELD] !== undefined);
+    if (headOld < 0 && !hasStaleRows) return false;
 
     const iName = H.indexOf('工会名称');
     const iStage = H.indexOf('收支类型');
     const iItem = H.indexOf('经费项目');
+    const fieldOf = (r, name) => (Array.isArray(r) ? r[H.indexOf(name)] : r[name]);
+
     let exact = null;
     if (data['04-经费收支'] && iName >= 0 && iStage >= 0 && iItem >= 0) {
       try {
@@ -528,28 +542,42 @@
       } catch (_) { exact = null; }
     }
 
-    let exactRows = 0;
-    sheet.rows.forEach(r => {
-      if (!Array.isArray(r)) return;
-      const wan = Number(r[idx]);
-      if (!Number.isFinite(wan)) return;
+    let converted = 0, exactRows = 0;
+    const convert = (r, wan) => {
       if (exact) {
-        const key = [r[iName], r[iStage], r[iItem]]
+        const key = [fieldOf(r, '工会名称'), fieldOf(r, '收支类型'), fieldOf(r, '经费项目')]
           .map(x => String(x == null ? '' : x).trim()).join('\u0001');
         const ex = exact.get(key);
-        // 把精确值折回 4 位小数的万元，和老值一致 ⇒ 这行没被手改
+        // 把精确值折回 1 元精度的万元，和老值一致 ⇒ 这行没被手改
         if (ex !== undefined && Math.abs(Math.round(ex) / 10000 - wan) < 1e-6) {
-          r[idx] = ex;
           exactRows++;
-          return;
+          return ex;
         }
       }
-      r[idx] = Math.round(wan * YUAN * 100) / 100;
+      return Math.round(wan * YUAN * 100) / 100;
+    };
+
+    sheet.rows.forEach(r => {
+      if (!r) return;
+      if (Array.isArray(r)) {
+        if (headOld < 0) return;
+        const wan = Number(r[headOld]);
+        if (!Number.isFinite(wan)) return;
+        r[headOld] = convert(r, wan);
+        converted++;
+        return;
+      }
+      if (typeof r !== 'object') return;
+      if (r[OLD_AMOUNT_FIELD] === undefined) return;      // 已经是元
+      const wan = Number(r[OLD_AMOUNT_FIELD]);
+      r[NEW_AMOUNT_FIELD] = Number.isFinite(wan) ? convert(r, wan) : 0;
+      delete r[OLD_AMOUNT_FIELD];
+      converted++;
     });
 
-    H[idx] = '金额（元）';
+    if (headOld >= 0) H[headOld] = NEW_AMOUNT_FIELD;
     data._meta = Object.assign({}, data._meta || {}, { waterfallUnit: 'yuan' });
-    console.log(`[migrate] 05-经费瀑布 金额单位 万元→元（${sheet.rows.length} 行，其中 ${exactRows} 行用经费表的元值精确还原）`);
+    console.log(`[migrate] 05-经费瀑布 金额单位 万元→元（换算 ${converted} 行，其中 ${exactRows} 行用经费表的元值精确还原）`);
     return true;
   }
 
