@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "text": {
     "documentTitle": "海底捞集团工会工作数据看板",
     "pageTitle": "海底捞集团工会工作数据看板",
@@ -152,20 +152,6 @@
       "visible": true,
       "sheet": "03-员工活动",
       "agg": "count",
-      "where": [],
-      "detail": {
-        "sheet": "03-员工活动"
-      }
-    },
-    {
-      "id": "act-coverage",
-      "label": "覆盖总人次",
-      "unit": "人次",
-      "decimals": 0,
-      "visible": true,
-      "sheet": "03-员工活动",
-      "agg": "sum",
-      "field": "覆盖人数",
       "where": [],
       "detail": {
         "sheet": "03-员工活动"
@@ -351,6 +337,86 @@
       }
     },
     {
+      "id": "chart-visit-monthly",
+      "visible": true,
+      "title": "",
+      "type": "bar",
+      "sheet": "02-走访慰问",
+      "groupBy": "慰问日期",
+      "dateGroup": "month",
+      "agg": "count",
+      "where": [],
+      "seriesName": "走访人次",
+      "overlay": {
+        "agg": "sum",
+        "field": "慰问物品金额（元）",
+        "type": "line",
+        "name": "慰问品金额",
+        "decimals": 0
+      },
+      "colors": [],
+      "legend": {
+        "show": true,
+        "position": "top"
+      },
+      "label": {
+        "show": true,
+        "formatter": "{c}"
+      },
+      "axis": {
+        "rotate": 0,
+        "yName": "人次"
+      },
+      "overlayAxisName": "元",
+      "height": 300,
+      "barWidth": 36,
+      "wrapLabels": false,
+      "decimals": 0,
+      "detail": {
+        "sheet": "02-走访慰问"
+      }
+    },
+    {
+      "id": "chart-act-monthly",
+      "visible": true,
+      "title": "",
+      "type": "bar",
+      "sheet": "03-员工活动",
+      "groupBy": "活动日期",
+      "dateGroup": "month",
+      "agg": "count",
+      "where": [],
+      "seriesName": "活动场次",
+      "overlay": {
+        "agg": "sum",
+        "field": "支出金额（元）",
+        "type": "line",
+        "name": "活动支出",
+        "decimals": 0
+      },
+      "colors": [],
+      "legend": {
+        "show": true,
+        "position": "top"
+      },
+      "label": {
+        "show": true,
+        "formatter": "{c}"
+      },
+      "axis": {
+        "rotate": 0,
+        "yName": "场"
+      },
+      "overlayAxisName": "元",
+      "height": 300,
+      "barWidth": 36,
+      "wrapLabels": false,
+      "decimals": 0,
+      "detail": {
+        "sheet": "03-员工活动"
+      }
+    },
+    {
       "id": "chart-fund-bar",
       "visible": true,
       "title": "",
@@ -489,6 +555,97 @@
         "sheet": "03-员工活动",
         "filterField": "活动形式"
       }
+    },
+    {
+      "id": "tbl-org-preparing",
+      "visible": true,
+      "type": "list",
+      "sheet": "01-组织建设",
+      "title": "筹建中工会 · 筹建进度表",
+      "where": [
+        {
+          "field": "组建状态",
+          "op": "==",
+          "value": "筹建中"
+        }
+      ],
+      "columns": [
+        {
+          "field": "工会名称",
+          "label": "工会名称"
+        },
+        {
+          "field": "当前进度",
+          "label": "当前进度",
+          "render": "progress",
+          "stages": [
+            "未启动",
+            "方案制定",
+            "会员登记",
+            "报批审批",
+            "选举筹备",
+            "已成立"
+          ]
+        },
+        {
+          "field": "进度日期",
+          "label": "进度日期"
+        },
+        {
+          "field": "工作负责人",
+          "label": "工作负责人"
+        }
+      ],
+      "sortBy": "nameAsc",
+      "limit": 0,
+      "detail": {
+        "sheet": "01-组织建设",
+        "filterField": "工会名称"
+      }
+    },
+    {
+      "id": "tbl-visit-staff-month",
+      "visible": true,
+      "type": "cross",
+      "sheet": "02-走访慰问",
+      "title": "工会干事月度走访情况（单位：人次）",
+      "rowField": "经办人",
+      "colField": "慰问日期",
+      "colDateGroup": "month",
+      "colSort": "asc",
+      "hideEmptyRows": true,
+      "value": {
+        "agg": "count"
+      },
+      "showTotalColumn": true,
+      "showTotalRow": true,
+      "totalLabel": "月度合计",
+      "detail": {
+        "sheet": "02-走访慰问",
+        "filterField": "经办人"
+      }
+    },
+    {
+      "id": "tbl-act-staff-month",
+      "visible": true,
+      "type": "cross",
+      "sheet": "03-员工活动",
+      "title": "工会干事月度活动开展情况（单位：场）",
+      "rowField": "经办人",
+      "colField": "活动日期",
+      "colDateGroup": "month",
+      "colSort": "asc",
+      "hideEmptyRows": true,
+      "value": {
+        "agg": "count"
+      },
+      "showTotalColumn": true,
+      "showTotalRow": true,
+      "totalLabel": "月度合计",
+      "detail": {
+        "sheet": "03-员工活动",
+        "filterField": "经办人"
+      }
     }
   ],
   "modules": [
@@ -533,6 +690,19 @@
               "visible": true,
               "title": "",
               "refId": "tbl-org-level"
+            }
+          ]
+        },
+        {
+          "id": "c-org-3",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-org-preparing",
+              "type": "table",
+              "visible": true,
+              "title": "筹建中工会 · 筹建进度表（点击工会可看明细）",
+              "refId": "tbl-org-preparing"
             }
           ]
         }
@@ -580,6 +750,32 @@
               "refId": "tbl-visit-areas"
             }
           ]
+        },
+        {
+          "id": "c-visit-3",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-visit-monthly",
+              "type": "chart",
+              "visible": true,
+              "title": "月度走访慰问人次与慰问品金额",
+              "refId": "chart-visit-monthly"
+            }
+          ]
+        },
+        {
+          "id": "c-visit-4",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-visit-staff",
+              "type": "table",
+              "visible": true,
+              "title": "工会干事月度数据卡片（点击干事可看明细）",
+              "refId": "tbl-visit-staff-month"
+            }
+          ]
         }
       ]
     },
@@ -601,7 +797,6 @@
               "title": "",
               "metricIds": [
                 "act-total",
-                "act-coverage",
                 "act-spend"
               ]
             },
@@ -640,6 +835,32 @@
               "visible": true,
               "title": "",
               "refId": "chart-act-type"
+            }
+          ]
+        },
+        {
+          "id": "c-act-4",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-act-monthly",
+              "type": "chart",
+              "visible": true,
+              "title": "月度员工活动场次与活动支出",
+              "refId": "chart-act-monthly"
+            }
+          ]
+        },
+        {
+          "id": "c-act-5",
+          "width": 12,
+          "blocks": [
+            {
+              "id": "b-act-staff",
+              "type": "table",
+              "visible": true,
+              "title": "工会干事月度数据卡片（点击干事可看明细）",
+              "refId": "tbl-act-staff-month"
             }
           ]
         }
@@ -697,6 +918,5 @@
         }
       ]
     }
-  ],
-  "unitsVersion": 2
+  ]
 }

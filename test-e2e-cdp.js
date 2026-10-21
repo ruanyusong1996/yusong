@@ -196,12 +196,18 @@ class CDP {
     await cdp.evalJs('[...document.querySelectorAll("#modules-root .module-title")].map(e=>e.textContent.trim())'),
     ['一、组织建设情况', '二、走访慰问情况', '三、员工活动情况', '四、经费收支情况']);
 
-  t('模块内列宽栅格正确 (span 5/7, 6/6, 12/6/6, 12/12/12)',
+  // v1.6 布局：组织 5/7 + 筹建进度 12，走访 6/6 + 月度图 12 + 干事矩阵 12，
+  // 活动 12/6/6 + 月度图 12 + 干事矩阵 12，经费 12/12/12
+  t('模块内列宽栅格正确 (5/7/12, 6/6/12/12, 12/6/6/12/12, 12/12/12)',
     await cdp.evalJs(`[...document.querySelectorAll("#modules-root .mod-col")].map(c=>c.style.gridColumn)`),
-    ['span 5', 'span 7', 'span 6', 'span 6', 'span 12', 'span 6', 'span 6', 'span 12', 'span 12', 'span 12']);
+    ['span 5', 'span 7', 'span 12',
+      'span 6', 'span 6', 'span 12', 'span 12',
+      'span 12', 'span 6', 'span 6', 'span 12', 'span 12',
+      'span 12', 'span 12', 'span 12']);
 
-  t('指标卡片总数 = 13',
-    await cdp.evalJs('document.querySelectorAll("#modules-root [data-metric]").length'), 13);
+  // 13 → 12：v1.6 按需求删掉了「覆盖总人次」卡片
+  t('指标卡片总数 = 12',
+    await cdp.evalJs('document.querySelectorAll("#modules-root [data-metric]").length'), 12);
 
   // 指标取值
   const metricVals = await cdp.evalJs(`(function(){
@@ -215,15 +221,18 @@ class CDP {
   t('筹建中 = 7', metricVals['org-preparing'], '7');
   t('走访慰问人次 = 56', metricVals['visit-total'], '56');
   t('开展活动总数 = 52', metricVals['act-total'], '52');
-  t('活动覆盖人次 = 2138', metricVals['act-coverage'], '2138');
+  // v1.6：「覆盖总人次」卡片已按需求删除，改用「活动支出总额」占位验证（金额列待补录时为 0）
+  t('活动支出总额 = 0（金额列待补录）', metricVals['act-spend'], '0');
+  t('慰问品总金额 = 0（金额列待补录）', metricVals['visit-amount'], '0');
   t('当前结余(2位小数) = 66.75', metricVals['fund-balance'], '66.75');
   t('★公式指标 组建完成率 = 65.0%', metricVals['org-rate'], '65.0');
   t('★公式指标 平均每会结余 = 3.34 万元', metricVals['fund-per-org'], '3.34');
 
   // 图表
   // 4 张普通图 + v1.3 新增的瀑布（桥梁）图
-  t('图表块 5 个且 ECharts 已绘制 canvas',
-    await cdp.evalJs('[...document.querySelectorAll("#modules-root canvas")].length'), 5);
+  // 7 = 组织饼图 / 走访类型 / 活动类型 / 走访月度 / 活动月度 / 经费柱状 / 经费桥梁
+  t('图表块 7 个且 ECharts 已绘制 canvas',
+    await cdp.evalJs('[...document.querySelectorAll("#modules-root canvas")].length'), 7);
 
   // 色板容错：历史脏数据把色板存成过字符串，"#" 这种非法颜色必须被过滤掉，
   // 否则 ECharts 抛 addColorStop 异常、整张图渲染不出来。
@@ -244,8 +253,9 @@ class CDP {
   t('colorAt() 返回合法颜色', palRobust.colorAt返回合法色, true);
 
   // 统计表
-  t('统计表块 3 个',
-    await cdp.evalJs('document.querySelectorAll("#modules-root table.data-table").length'), 3);
+  // 6 = 组织交叉表 / 筹建进度表 / 走访大区 / 干事月度矩阵 / 活动形式 / 干事月度矩阵
+  t('统计表块 6 个',
+    await cdp.evalJs('document.querySelectorAll("#modules-root table.data-table").length'), 6);
   t('组织建设交叉表 表头 = rowField + 列 + 合计',
     await cdp.evalJs('[...document.querySelectorAll("#modules-root table.data-table thead th")].map(e=>e.textContent.trim())').then(a => a.slice(0, 4)),
     ['工会级别', '已组建', '筹建中', '合计']);
@@ -322,10 +332,10 @@ class CDP {
   t('分区标题 = ①~⑧', cfgCounts.sectionTitles.map(s => s.slice(0, 1)),
     ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧']);
   t('指标编辑行 = 13', cfgCounts.metricRows, 13);
-  t('图表编辑行 = 5（含新增的瀑布图）', cfgCounts.chartRows, 5);
-  t('统计表编辑行 = 3', cfgCounts.tableRows, 3);
+  t('图表编辑行 = 7（含瀑布图 + 两张月度图）', cfgCounts.chartRows, 7);
+  t('统计表编辑行 = 6（含筹建进度表 + 两张干事矩阵）', cfgCounts.tableRows, 6);
   t('模块卡片 = 4', cfgCounts.modCards, 4);
-  t('列卡片 = 10（经费模块新增了桥梁图那一列）', cfgCounts.colCards, 10);
+  t('列卡片 = 15（v1.6 新增 5 列：筹建进度/两月度图/两干事矩阵）', cfgCounts.colCards, 15);
   t('有「+ 添加模块」按钮', cfgCounts.addModBtn, true);
   t('有「+ 新增指标」按钮', cfgCounts.addMetricBtn, true);
   t('主题色选择器 = 9 个', cfgCounts.themeColorInputs, 9);
@@ -1050,6 +1060,206 @@ class CDP {
     return p.status;
   })()`);
   t('清理 E2E 测试数据 200', cleaned, 200);
+
+  console.log('\n【E7】v1.6 新板块：筹建进度表 / 月度图 / 干事月度矩阵');
+  await gotoDashboard();
+
+  // ---- ① 筹建中工会筹建进度表（明细列表表）----
+  const prep = await cdp.evalJs(`(function(){
+    var host = document.getElementById('table-b-org-preparing');
+    if (!host) return { found: false };
+    var tb = host.querySelector('table.data-table');
+    if (!tb) return { found: true, table: false };
+    var head = [...tb.querySelectorAll('thead th')].map(x=>x.textContent.trim());
+    var body = [...tb.querySelectorAll('tbody tr')];
+    return {
+      found: true, table: true,
+      head: head,
+      rows: body.length,
+      first: body.length ? [...body[0].querySelectorAll('td')].map(x=>x.textContent.trim()) : [],
+      bars: host.querySelectorAll('.pg-bar').length,
+      clickable: body.filter(tr=>tr.classList.contains('clickable')).length,
+      visible: host.offsetParent !== null,
+    };
+  })()`);
+  console.log('    筹建进度表:', JSON.stringify(prep));
+  t('筹建进度表已渲染', prep.found && prep.table, true);
+  t('表头含 工会名称/当前进度/进度日期/工作负责人',
+    ['工会名称', '当前进度', '进度日期', '工作负责人'].every(h => (prep.head || []).indexOf(h) >= 0), true);
+  t('只显示筹建中的工会（种子 7 个）', prep.rows, 7);
+  t('每行可点击看明细', prep.clickable, 7);
+  t('筹建进度表真实可见', prep.visible, true);
+  // 还没填进度时不该画空槽（一排空槽看着像页面坏了），只显示「—」
+  t('未填进度时不画空进度条', prep.bars, 0);
+  t('未填进度显示「—」', (prep.first || [])[1], '—');
+
+  // ---- 填一条真实进度，验证「下拉阶段 → 进度条百分比」这条链路 ----
+  const fillStatus = await (async () => {
+    const g = await fetch(BASE + '/api/data', { headers: { Cookie: `hdj_sid=${SID_ADMIN || SID}` } });
+    const d = await g.json();
+    if (!d || !d['01-组织建设']) {
+      console.log(`    ⚠ GET /api/data 失败 status=${g.status} keys=${JSON.stringify(Object.keys(d || {}).slice(0, 4))}`);
+      return 0;
+    }
+    const sh = d['01-组织建设'];
+    const H = sh.headers;
+    const put = { '当前进度': '会员登记', '进度日期': '2026-09-15', '工作负责人': 'E2E负责人' };
+    sh.rows.forEach(r => {
+      const nm = Array.isArray(r) ? r[H.indexOf('工会名称')] : r['工会名称'];
+      if (String(nm || '').trim() !== '浙沪大区工会') return;
+      Object.keys(put).forEach(k => {
+        const i = H.indexOf(k);
+        if (i < 0) return;
+        if (Array.isArray(r)) { while (r.length <= i) r.push(''); r[i] = put[k]; }
+        else r[k] = put[k];
+      });
+    });
+    const res = await fetch(BASE + '/api/data', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: `hdj_sid=${SID_ADMIN}` },
+      body: JSON.stringify(d),
+    });
+    return res.status;
+  })();
+  t('写入一条筹建进度 200', fillStatus, 200);
+  await gotoDashboard();
+  const filled = await cdp.evalJs(`(function(){
+    var host = document.getElementById('table-b-org-preparing');
+    if (!host) return { found:false };
+    var tr = [...host.querySelectorAll('tbody tr')].find(x => x.textContent.indexOf('浙沪大区工会') >= 0);
+    if (!tr) return { found:true, row:false };
+    var tds = [...tr.querySelectorAll('td')];
+    var bar = tr.querySelector('.pg-bar > i');
+    return {
+      found:true, row:true,
+      texts: tds.map(x=>x.textContent.trim()),
+      barWidth: bar ? bar.style.width : null,
+    };
+  })()`);
+  console.log('    填完进度:', JSON.stringify(filled));
+  t('进度阶段显示为文字', (filled.texts || [])[1], '会员登记');
+  // 浏览器会把 "40.0%" 规范化成 "40%"
+  t('阶段换算成进度条（6 阶段里的第 3 个 = 40%）', filled.barWidth, '40%');
+  t('进度日期同步显示', (filled.texts || [])[2], '2026-09-15');
+  t('工作负责人同步显示', (filled.texts || [])[3], 'E2E负责人');
+  t('其他未填的工会不受影响',
+    await cdp.evalJs(`document.querySelectorAll('#table-b-org-preparing .pg-bar').length`), 1);
+
+  // ---- ② 月度图（柱=人次/场次，线=金额，双轴）----
+  const monthlyChart = await cdp.evalJs(`(function(){
+    var out = {};
+    ['b-visit-monthly','b-act-monthly'].forEach(function(id){
+      var el = document.getElementById('chart-' + id);
+      if (!el) { out[id] = { found:false }; return; }
+      var inst = (window.echarts && echarts.getInstanceByDom) ? echarts.getInstanceByDom(el) : null;
+      if (!inst) { out[id] = { found:true, inst:false }; return; }
+      var op = inst.getOption();
+      out[id] = {
+        found: true, inst: true,
+        series: (op.series||[]).length,
+        types: (op.series||[]).map(s=>s.type),
+        names: (op.series||[]).map(s=>s.name),
+        cats: ((op.xAxis||[])[0]||{}).data || [],
+        yAxes: (op.yAxis||[]).length,
+        legend: !!((op.legend||[])[0]||{}).show,
+      };
+    });
+    return out;
+  })()`);
+  console.log('    月度图:', JSON.stringify(monthlyChart));
+  const vm1 = monthlyChart['b-visit-monthly'] || {}, am1 = monthlyChart['b-act-monthly'] || {};
+  t('走访月度图有两条系列（人次柱 + 金额线）', vm1.series, 2);
+  t('走访月度图系列类型', (vm1.types || []).join(','), 'bar,line');
+  t('走访月度图有左右两条 Y 轴', vm1.yAxes, 2);
+  t('走访月度图 x 轴是按月份升序', (vm1.cats || []).join(','), '2026-08,2026-09');
+  t('活动月度图有两条系列', am1.series, 2);
+  t('活动月度图 x 轴是按月份升序', (am1.cats || []).join(','), '2026-08,2026-09');
+  t('月度图显示图例', vm1.legend, true);
+
+  // ---- ③ 工会干事 × 月份 矩阵表 ----
+  const staffTbl = await cdp.evalJs(`(function(){
+    var host = document.getElementById('table-b-visit-staff');
+    if (!host) return { found:false };
+    var tb = host.querySelector('table.data-table');
+    if (!tb) return { found:true, table:false };
+    var head = [...tb.querySelectorAll('thead th')].map(x=>x.textContent.trim());
+    var body = [...tb.querySelectorAll('tbody tr')];
+    return {
+      found:true, table:true, head: head,
+      rows: body.map(tr=>[...tr.querySelectorAll('td')].map(x=>x.textContent.trim())),
+      visible: host.offsetParent !== null,
+    };
+  })()`);
+  console.log('    干事矩阵表:', JSON.stringify(staffTbl));
+  t('干事矩阵表已渲染', staffTbl.found && staffTbl.table, true);
+  t('矩阵列 = 月份 + 合计', (staffTbl.head || []).join(','), '经办人,2026-08,2026-09,合计');
+  t('矩阵行 = 各工会干事', (staffTbl.rows || []).some(r => r[0] === '杨聃'), true);
+  t('矩阵有月度合计行', (staffTbl.rows || []).some(r => r[0] === '月度合计'), true);
+  t('干事矩阵表真实可见', staffTbl.visible, true);
+
+  // ---- ④ 「覆盖总人次」卡片已按要求删除 ----
+  const coverage = await cdp.evalJs(`(function(){
+    return {
+      cards: document.querySelectorAll('[data-metric="act-coverage"]').length,
+      labels: [...document.querySelectorAll('.metric-label')].map(x=>x.textContent.trim()),
+    };
+  })()`);
+  console.log('    覆盖总人次:', JSON.stringify(coverage));
+  t('「覆盖总人次」卡片已从看板移除', coverage.cards, 0);
+  t('指标卡里不再出现「覆盖总人次」', (coverage.labels || []).indexOf('覆盖总人次'), -1);
+  t('「活动总数量 / 活动支出总额」卡片仍在',
+    ['活动总数量', '活动支出总额'].every(l => (coverage.labels || []).indexOf(l) >= 0), true);
+
+  // ---- ⑤ 后台能编辑这两张新表（列表表要有「明细列」编辑器，交叉表要有日期分组）----
+  await gotoAdmin();
+  await clickTab('__config', '!!document.getElementById("cfg-json")', '配置面板(明细表)');
+  const idxList = await cdp.evalJs(`[...document.querySelectorAll('[data-tables-row]')].findIndex(tr=>tr.textContent.indexOf('tbl-org-preparing')>=0)`);
+  t('配置面板里能找到「筹建进度表」', idxList >= 0, true);
+  await cdp.evalJs(`document.querySelector('[data-tables-row="${idxList}"] [data-act="table-edit"]').click()`);
+  await waitFor('!document.getElementById("mini-modal").classList.contains("hidden")', '明细表编辑弹窗');
+  await sleep(400);
+  const listEditor = await cdp.evalJs(`(function(){
+    var listRows = [...document.querySelectorAll('#list-rows [data-lrow]')];
+    var whereRows = [...document.querySelectorAll('#where-rows [data-wrow]')];
+    var typeSel = document.querySelector('[data-k="type"]');
+    var prog = listRows[1];
+    return {
+      open: !document.getElementById('mini-modal').classList.contains('hidden'),
+      type: typeSel ? typeSel.value : null,
+      listRows: listRows.length,
+      whereRows: whereRows.length,
+      whereValue: whereRows[0] ? whereRows[0].querySelector('[data-w-value]').value : null,
+      fields: listRows.map(r => r.querySelector('[data-l-field]').value),
+      renders: listRows.map(r => r.querySelector('[data-l-render]').value),
+      stages: prog ? prog.querySelector('[data-l-stages]').value : '',
+      scrollable: (function(){var c=document.getElementById('mini-modal-content'); var b=c.scrollTop; c.scrollTop=1e6; var m=c.scrollTop; c.scrollTop=b; return m>0;})(),
+    };
+  })()`);
+  console.log('    明细表编辑器:', JSON.stringify(listEditor));
+  t('统计表类型下拉 = list', listEditor.type, 'list');
+  t('明细列编辑器有 4 列', listEditor.listRows, 4);
+  t('明细列字段按配置回填', (listEditor.fields || []).join(','), '工会名称,当前进度,进度日期,工作负责人');
+  t('「当前进度」渲染方式 = progress', (listEditor.renders || [])[1], 'progress');
+  t('进度阶段回填完整', (listEditor.stages || '').indexOf('选举筹备') >= 0, true);
+  t('筛选条件编辑器有 1 条（组建状态=筹建中）', listEditor.whereRows, 1);
+  t('筛选条件值回填', listEditor.whereValue, '筹建中');
+  t('明细表编辑器可滚动', listEditor.scrollable, true);
+  await closeMini();
+
+  const idxCross = await cdp.evalJs(`[...document.querySelectorAll('[data-tables-row]')].findIndex(tr=>tr.textContent.indexOf('tbl-visit-staff-month')>=0)`);
+  await cdp.evalJs(`document.querySelector('[data-tables-row="${idxCross}"] [data-act="table-edit"]').click()`);
+  await waitFor('!document.getElementById("mini-modal").classList.contains("hidden")', '交叉表编辑弹窗');
+  await sleep(400);
+  const crossEditor = await cdp.evalJs(`(function(){
+    var g = function(k){ var e=document.querySelector('[data-k="'+k+'"]'); return e?e.value:null; };
+    return { type: g('type'), colDateGroup: g('colDateGroup'), rowField: g('rowField'), colField: g('colField') };
+  })()`);
+  console.log('    干事矩阵编辑器:', JSON.stringify(crossEditor));
+  t('交叉表类型 = cross', crossEditor.type, 'cross');
+  t('列按月份分组已回填', crossEditor.colDateGroup, 'month');
+  t('行字段 = 经办人', crossEditor.rowField, '经办人');
+  t('列字段 = 慰问日期', crossEditor.colField, '慰问日期');
+  await closeMini();
 
   console.log('\n【F】运行期 JS 异常');
   console.log('    捕获异常数:', consoleErrs.length, consoleErrs.slice(0, 3));

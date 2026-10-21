@@ -339,6 +339,35 @@ html, body {
   font-weight: 600;
   text-align: center;
 }
+/* 明细表：空值用淡灰的「—」，别让人误以为是 0 */
+.data-table .cell-empty {
+  color: var(--muted);
+  font-weight: 400;
+  text-align: center;
+}
+
+/* ---- 进度条单元格（筹建进度表用）---- */
+.pg-cell { min-width: 120px; }
+.pg-text {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 5px;
+  white-space: nowrap;
+}
+.pg-bar {
+  height: 6px;
+  max-width: 260px;
+  border-radius: 3px;
+  background: rgba(77, 216, 255, 0.14);
+  overflow: hidden;
+}
+.pg-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent) 0%, #1E40AF 100%);
+  transition: width 0.3s ease;
+}
 
 /* ========== 图表 ========== */
 .chart-area {

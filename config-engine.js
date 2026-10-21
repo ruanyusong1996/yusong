@@ -240,14 +240,53 @@
   // ---------------------------------------------------------------------
   // 图表：分组聚合
   // ---------------------------------------------------------------------
+  /**
+   * 从日期字段里取「YYYY-MM」月份键。
+   * 支持：Date 对象 / 2026-08-05 / 2026/8/5 / 2026.8.5 / 2026年8月5日 / 2026-08 / Excel 日期序列号。
+   * 取不到月份一律返回 null —— 调用方据此把「日期不是正规日期」的行排除出月度统计
+   * （这些行仍然计入总人次/总场次，只是月度分布里看不到，属于待补录数据）。
+   */
+  function monthKey(v) {
+    if (v === null || v === undefined || v === '') return null;
+    // 鸭子类型判断而不是 instanceof Date：跨 iframe / vm 沙箱时 instanceof 会失效
+    if (typeof v.getFullYear === 'function' && typeof v.getMonth === 'function') {
+      const t = typeof v.getTime === 'function' ? v.getTime() : NaN;
+      if (Number.isNaN(t)) return null;
+      return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}`;
+    }
+    const s = String(v).trim();
+    if (!s) return null;
+    const m = s.match(/^(\d{4})\s*[-/.年]\s*(\d{1,2})/);
+    if (m) {
+      const mo = Number(m[2]);
+      if (mo >= 1 && mo <= 12) return `${m[1]}-${String(mo).padStart(2, '0')}`;
+      return null;
+    }
+    // 纯数字：Excel 日期序列号（1900 起点；20000 ≈ 1954 年，太小的一律不算日期）
+    const n = Number(s);
+    if (Number.isFinite(n) && n > 20000 && n < 80000) {
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  /** 分组用的键：dateGroup='month' 时取月份（取不到返回 null = 这行不参与） */
+  function groupKey(row, headers, spec) {
+    const raw = pick(row, headers, spec.groupBy);
+    if (spec.dateGroup === 'month') return monthKey(raw);
+    if (raw === null || raw === undefined || String(raw).trim() === '') return '（空）';
+    return String(raw);
+  }
+
   function groupRows(sheet, spec) {
     if (!sheet) return [];
     const headers = sheet.headers || [];
     const rows = filterRows(sheet, spec.where);
     const map = new Map();
     rows.forEach(r => {
-      let key = pick(r, headers, spec.groupBy);
-      key = (key === null || key === undefined || String(key).trim() === '') ? '（空）' : String(key);
+      const key = groupKey(r, headers, spec);
+      if (key === null) return;          // 月度分组时：日期不规范的行跳过
       let st = map.get(key);
       if (!st) { st = { key, sum: 0, n: 0, max: -Infinity, min: Infinity }; map.set(key, st); }
       const num = rowNumber(r, headers, spec);
@@ -267,6 +306,10 @@
       return { name: st.key, value };
     });
 
+    // 时间维度即使没指定排序也要按月份升序，否则月度趋势图会乱序
+    if (spec.dateGroup === 'month' && !spec.sortBy) {
+      list.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
+    }
     switch (spec.sortBy) {
       case 'valueDesc': list.sort((a, b) => b.value - a.value); break;
       case 'valueAsc': list.sort((a, b) => a.value - b.value); break;
@@ -312,29 +355,113 @@
     return { head: cols.map(c => c.label || ''), rows: body };
   }
 
-  /** 交叉表：行字段 × 列字段，带合计 */
+  /** 交叉表：行字段 × 列字段，带合计
+   *  增强点（v1.6）：
+   *   - colDateGroup / rowDateGroup = 'month'：按月份当行/列（日期不规范的行排除）
+   *   - value = { agg, field, scale }：单元格可以是求和/平均，不只是计数
+   *   - colSort = 'asc' | 'desc'：列排序；按月分组时默认按月份升序
+   */
   function crossTable(sheet, def) {
     if (!sheet) return { head: [], rows: [], colTotals: [], grand: 0 };
     const headers = sheet.headers || [];
     const rows = filterRows(sheet, def.where);
-    const rowKeys = uniqKeys(rows.map(r => pick(r, headers, def.rowField)));
+    const norm = v => (String(v == null ? '' : v).trim() || '（空）');
+
+    // 某一维的取值：dateGroup='month' 时返回月份键，取不到返回 null（该行不计入）
+    const dimKey = (row, field, dateGroup) => {
+      if (dateGroup === 'month') return monthKey(pick(row, headers, field));
+      return norm(pick(row, headers, field));
+    };
+    const keep = (row, field, dateGroup) => dimKey(row, field, dateGroup) !== null;
+
+    const rowDim = { field: def.rowField, dg: def.rowDateGroup };
+    const colDim = { field: def.colField, dg: def.colDateGroup };
+
+    const inRows = rows.filter(r => keep(r, rowDim.field, rowDim.dg) && keep(r, colDim.field, colDim.dg));
+
+    // 行/列取值集合（去重、保序）
+    const collect = (dim) => {
+      const seen = new Set(), out = [];
+      inRows.forEach(r => {
+        const k = dimKey(r, dim.field, dim.dg);
+        if (k === null || seen.has(k)) return;
+        seen.add(k); out.push(k);
+      });
+      return out;
+    };
+    // hideEmptyRows：行字段为空的行不单列出来。
+    // 「经办人」这类新加的列往往还没补录，全空时会出现一行孤零零的「（空）」，
+    // 看着像坏了；关掉它反而更诚实（下面会显示"暂无数据"提示行）。
+    const rowKeys = collect(rowDim)
+      .filter(k => !(def.hideEmptyRows && k === '（空）'));
+    let colKeys = collect(colDim);
+    if (def.colSort === 'asc' || (colDim.dg === 'month' && def.colSort !== 'desc')) {
+      colKeys.sort((a, b) => String(a).localeCompare(String(b), 'zh'));
+    } else if (def.colSort === 'desc') {
+      colKeys.sort((a, b) => String(b).localeCompare(String(a), 'zh'));
+    }
+
     const cols = ((def.crossColumns && def.crossColumns.length) ? def.crossColumns
-      : uniqKeys(rows.map(r => pick(r, headers, def.colField))).map(k => ({ key: k, label: k })))
+      : colKeys.map(k => ({ key: k, label: k })))
       .map(c => ({ key: String(c.key), label: c.label || String(c.key) }));
 
-    const norm = v => (String(v == null ? '' : v).trim() || '（空）');
+    // 单元格取值方式：默认计数（保持老配置行为不变）
+    const val = def.value && def.value.agg ? def.value : { agg: 'count' };
+    const cellValue = (subset) => aggregate(
+      { headers, rows: subset },
+      { agg: val.agg, field: val.field, scale: val.scale }
+    );
+
     const body = rowKeys.map(k => {
-      const rws = rows.filter(r => norm(pick(r, headers, def.rowField)) === k);
-      const cells = cols.map(c => rws.filter(r => norm(pick(r, headers, def.colField)) === c.key).length);
-      return { key: k, cells, total: cells.reduce((a, b) => a + b, 0) };
+      const rws = inRows.filter(r => dimKey(r, rowDim.field, rowDim.dg) === k);
+      const cells = cols.map(c =>
+        cellValue(rws.filter(r => String(dimKey(r, colDim.field, colDim.dg)) === c.key)));
+      return { key: k, cells, total: cellValue(rws) };
     });
-    const colTotals = cols.map((_c, ci) => body.reduce((a, b) => a + b.cells[ci], 0));
-    const grand = colTotals.reduce((a, b) => a + b, 0);
-    return { head: cols.map(c => c.label), rows: body, colTotals, grand };
+    const colTotals = cols.map(c =>
+      cellValue(inRows.filter(r => String(dimKey(r, colDim.field, colDim.dg)) === c.key)));
+    const grand = cellValue(inRows);
+    return { head: cols.map(c => c.label), rows: body, colTotals, grand, columns: cols };
+  }
+
+  /**
+   * 明细（列表）表：一行 = 数据表里的一行，列 = 配置里指定的字段。
+   * 用于「筹建中工会筹建进度」这类要逐条看、又要能自由增删列的场景
+   * （用户在后台「列管理」给数据表加一列，再到这里加一列就能显示出来）。
+   * def: { sheet, where, columns: [{ field, label, render?, stages? }], sortBy, sortField, limit }
+   * render: 'text'(默认) | 'progress'(进度条) | 'number'(数字格式化)
+   */
+  function listTable(sheet, def) {
+    if (!sheet) return { head: [], rows: [], columns: [] };
+    const headers = sheet.headers || [];
+    const rows = filterRows(sheet, def.where);
+    const cols = (def.columns && def.columns.length)
+      ? def.columns
+      : [{ field: headers[1] || '', label: headers[1] || '名称' }];
+
+    let body = rows.map((r, i) => {
+      const cells = cols.map(c => pick(r, headers, c.field));
+      return {
+        key: String(cells[0] == null ? '' : cells[0]),
+        cells,
+        index: i,
+        detailValue: (def.detail && def.detail.filterField) ? String(pick(r, headers, def.detail.filterField) || '') : '',
+      };
+    });
+
+    if (def.sortBy === 'nameDesc') body.sort((a, b) => String(b.key).localeCompare(String(a.key), 'zh'));
+    else if (def.sortBy === 'nameAsc') body.sort((a, b) => String(a.key).localeCompare(String(b.key), 'zh'));
+    else if (def.sortBy === 'field' && def.sortField) {
+      const fi = cols.findIndex(c => c.field === def.sortField);
+      if (fi >= 0) body.sort((a, b) => String(a.cells[fi] == null ? '' : a.cells[fi]).localeCompare(String(b.cells[fi] == null ? '' : b.cells[fi]), 'zh'));
+    }
+    if (def.limit && def.limit > 0) body = body.slice(0, def.limit);
+    return { head: cols.map(c => c.label || c.field || ''), rows: body, columns: cols };
   }
 
   /** 统一入口：按表定义渲染数据 */
   function buildTable(sheet, def) {
+    if (def.type === 'list') return listTable(sheet, def);
     return def.type === 'cross' ? crossTable(sheet, def) : groupTable(sheet, def);
   }
 
@@ -676,7 +803,8 @@
     aggregate, rowNumber,
     evalExpr, substitute, tokenizeExpr,
     computeMetrics,
-    groupRows, groupTable, crossTable, buildTable,
+    groupRows, groupTable, crossTable, listTable, buildTable,
+    monthKey, groupKey,
     fmtNum,
     OPS, OP_LABEL, AGG_LABEL,
     // 瀑布（桥梁）图

@@ -7,7 +7,7 @@
 window.SEED_CONFIG = {
   // 模板版本：服务端启动时用它判断「要不要把新增的图表/模块块补进线上已有配置」。
   // 加了新功能就 +1，用户自己删掉的东西不会被反复加回来。
-  version: 3,
+  version: 4,
 
   /* ---------- 文字 ---------- */
   text: {
@@ -87,11 +87,6 @@ window.SEED_CONFIG = {
       detail: { sheet: '03-员工活动' },
     },
     {
-      id: 'act-coverage', label: '覆盖总人次', unit: '人次', decimals: 0, visible: true,
-      sheet: '03-员工活动', agg: 'sum', field: '覆盖人数', where: [],
-      detail: { sheet: '03-员工活动' },
-    },
-    {
       id: 'act-spend', label: '活动支出总额', unit: '元', decimals: 0, visible: true,
       sheet: '03-员工活动', agg: 'sum', field: '支出金额（元）', where: [],
       detail: { sheet: '03-员工活动' },
@@ -158,6 +153,35 @@ window.SEED_CONFIG = {
       height: 280, centerLabel: true,
       detail: { sheet: '03-员工活动', groupField: '活动类型' },
     },
+    /* --- 月度分布图（v1.6）--- *
+     * dateGroup:'month' = 按日期字段的「年-月」分组；日期不规范的行会被跳过
+     *   （它们仍然计入总人次/总场次，只是月度分布里看不到，属于待补录数据）。
+     * overlay = 叠加的第二条系列（柱=人次/场次，线=金额），共用同一套月份分组。
+     */
+    {
+      id: 'chart-visit-monthly', visible: true, title: '',
+      type: 'bar', sheet: '02-走访慰问', groupBy: '慰问日期', dateGroup: 'month', agg: 'count', where: [],
+      seriesName: '走访人次',
+      overlay: { agg: 'sum', field: '慰问物品金额（元）', type: 'line', name: '慰问品金额', decimals: 0 },
+      colors: [],
+      legend: { show: true, position: 'top' },
+      label: { show: true, formatter: '{c}' },
+      axis: { rotate: 0, yName: '人次' }, overlayAxisName: '元',
+      height: 300, barWidth: 36, wrapLabels: false, decimals: 0,
+      detail: { sheet: '02-走访慰问' },
+    },
+    {
+      id: 'chart-act-monthly', visible: true, title: '',
+      type: 'bar', sheet: '03-员工活动', groupBy: '活动日期', dateGroup: 'month', agg: 'count', where: [],
+      seriesName: '活动场次',
+      overlay: { agg: 'sum', field: '支出金额（元）', type: 'line', name: '活动支出', decimals: 0 },
+      colors: [],
+      legend: { show: true, position: 'top' },
+      label: { show: true, formatter: '{c}' },
+      axis: { rotate: 0, yName: '场' }, overlayAxisName: '元',
+      height: 300, barWidth: 36, wrapLabels: false, decimals: 0,
+      detail: { sheet: '03-员工活动' },
+    },
     {
       id: 'chart-fund-bar', visible: true, title: '',
       type: 'bar', sheet: '04-经费收支', groupBy: '工会名称', agg: 'sum', field: '当前结余（万元）', where: [],
@@ -216,6 +240,52 @@ window.SEED_CONFIG = {
       sortBy: 'valueDesc', limit: 0,
       detail: { sheet: '03-员工活动', filterField: '活动形式' },
     },
+
+    /* --- 明细（列表）表（v1.6）：筹建中工会的筹建进度 --- *
+     * 一行 = 一个筹建中的工会，列 = 你指定的字段。
+     * 「当前进度」用 render:'progress' 画成进度条（阶段在 stages 里，未启动 0% → 已成立 100%）；
+     * 想加更多阶段列（如「方案审批日期」「选举完成日期」）：
+     *   后台「数据管理 → 列管理」给 01-组织建设 加列 → 再到「看板配置 → 统计表」
+     *   编辑本表，把新列加进 columns 即可，看板同步显示。
+     */
+    {
+      id: 'tbl-org-preparing', visible: true, type: 'list', sheet: '01-组织建设',
+      title: '筹建中工会 · 筹建进度表',
+      where: [{ field: '组建状态', op: '==', value: '筹建中' }],
+      columns: [
+        { field: '工会名称', label: '工会名称' },
+        {
+          field: '当前进度', label: '当前进度', render: 'progress',
+          stages: ['未启动', '方案制定', '会员登记', '报批审批', '选举筹备', '已成立'],
+        },
+        { field: '进度日期', label: '进度日期' },
+        { field: '工作负责人', label: '工作负责人' },
+      ],
+      sortBy: 'nameAsc', limit: 0,
+      detail: { sheet: '01-组织建设', filterField: '工会名称' },
+    },
+
+    /* --- 工会干事 × 月份 矩阵表（v1.6）--- *
+     * colDateGroup:'month' → 列自动从数据里的月份派生（每月新增数据会自动多一列），
+     * 日期不规范的行不计入矩阵（避免多出一列「（空）」）。
+     * value 改成 { agg:'sum', field:'xxx' } 就能变成「金额矩阵」。
+     */
+    {
+      id: 'tbl-visit-staff-month', visible: true, type: 'cross', sheet: '02-走访慰问',
+      title: '工会干事月度走访情况（单位：人次）',
+      rowField: '经办人', colField: '慰问日期', colDateGroup: 'month', colSort: 'asc',
+      hideEmptyRows: true, value: { agg: 'count' },
+      showTotalColumn: true, showTotalRow: true, totalLabel: '月度合计',
+      detail: { sheet: '02-走访慰问', filterField: '经办人' },
+    },
+    {
+      id: 'tbl-act-staff-month', visible: true, type: 'cross', sheet: '03-员工活动',
+      title: '工会干事月度活动开展情况（单位：场）',
+      rowField: '经办人', colField: '活动日期', colDateGroup: 'month', colSort: 'asc',
+      hideEmptyRows: true, value: { agg: 'count' },
+      showTotalColumn: true, showTotalRow: true, totalLabel: '月度合计',
+      detail: { sheet: '03-员工活动', filterField: '经办人' },
+    },
   ],
 
   /* ---------- 模块与布局 ----------
@@ -239,6 +309,16 @@ window.SEED_CONFIG = {
             { id: 'b-org-table', type: 'table', visible: true, title: '', refId: 'tbl-org-level' },
           ],
         },
+        {
+          id: 'c-org-3', width: 12,
+          blocks: [
+            {
+              id: 'b-org-preparing', type: 'table', visible: true,
+              title: '筹建中工会 · 筹建进度表（点击工会可看明细）',
+              refId: 'tbl-org-preparing',
+            },
+          ],
+        },
       ],
     },
     {
@@ -257,6 +337,24 @@ window.SEED_CONFIG = {
             { id: 'b-visit-table', type: 'table', visible: true, title: '', refId: 'tbl-visit-areas' },
           ],
         },
+        {
+          id: 'c-visit-3', width: 12,
+          blocks: [
+            {
+              id: 'b-visit-monthly', type: 'chart', visible: true,
+              title: '月度走访慰问人次与慰问品金额', refId: 'chart-visit-monthly',
+            },
+          ],
+        },
+        {
+          id: 'c-visit-4', width: 12,
+          blocks: [
+            {
+              id: 'b-visit-staff', type: 'table', visible: true,
+              title: '工会干事月度数据卡片（点击干事可看明细）', refId: 'tbl-visit-staff-month',
+            },
+          ],
+        },
       ],
     },
     {
@@ -265,7 +363,7 @@ window.SEED_CONFIG = {
         {
           id: 'c-act-1', width: 12,
           blocks: [
-            { id: 'b-act-metrics', type: 'metrics', visible: true, title: '', metricIds: ['act-total', 'act-coverage', 'act-spend'] },
+            { id: 'b-act-metrics', type: 'metrics', visible: true, title: '', metricIds: ['act-total', 'act-spend'] },
             { id: 'b-act-metrics2', type: 'metrics', visible: true, title: '关键派生指标（示例：可在后台改公式）', metricIds: ['org-rate', 'fund-per-org'] },
           ],
         },
@@ -279,6 +377,24 @@ window.SEED_CONFIG = {
           id: 'c-act-3', width: 6,
           blocks: [
             { id: 'b-act-chart', type: 'chart', visible: true, title: '', refId: 'chart-act-type' },
+          ],
+        },
+        {
+          id: 'c-act-4', width: 12,
+          blocks: [
+            {
+              id: 'b-act-monthly', type: 'chart', visible: true,
+              title: '月度员工活动场次与活动支出', refId: 'chart-act-monthly',
+            },
+          ],
+        },
+        {
+          id: 'c-act-5', width: 12,
+          blocks: [
+            {
+              id: 'b-act-staff', type: 'table', visible: true,
+              title: '工会干事月度数据卡片（点击干事可看明细）', refId: 'tbl-act-staff-month',
+            },
           ],
         },
       ],

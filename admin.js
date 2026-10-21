@@ -1073,6 +1073,15 @@ const CHART_FIELDS = [
   { k: 'field', label: '统计字段（瀑布图=金额列）', t: 'field', sheetOf: 'sheet' },
   { k: 'stageField', label: '【瀑布图】阶段字段（值含 期初/入账/支出/结余）', t: 'field', sheetOf: 'sheet' },
   { k: 'itemField', label: '【瀑布图】项目字段（经费项目名称）', t: 'field', sheetOf: 'sheet' },
+  { k: 'dateGroup', label: '【月度图】按月份分组', t: 'select', opts: [['', '不分组（按字段原值）'], ['month', '按分组字段的「年-月」分组']].map(([v, l]) => ({ v, l })) },
+  { k: 'seriesName', label: '主系列名称（图例用）', t: 'text' },
+  { k: 'overlay.type', label: '叠加系列-图形', t: 'select', opts: [['', '不叠加'], ['line', '折线（右轴）'], ['bar', '柱状（右轴）']].map(([v, l]) => ({ v, l })) },
+  { k: 'overlay.name', label: '叠加系列-名称', t: 'text' },
+  { k: 'overlay.agg', label: '叠加系列-统计方式', t: 'select', opts: [['count', '计数'], ['sum', '求和'], ['avg', '平均'], ['max', '最大值'], ['min', '最小值']].map(([v, l]) => ({ v, l })) },
+  { k: 'overlay.field', label: '叠加系列-统计字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'overlay.decimals', label: '叠加系列-小数位', t: 'number' },
+  { k: 'overlay.color', label: '叠加系列-颜色', t: 'color' },
+  { k: 'overlayAxisName', label: '叠加系列-右轴单位说明', t: 'text' },
   { k: 'height', label: '高度（px）', t: 'number' },
   { k: 'barWidth', label: '柱宽（px）', t: 'number' },
   { k: 'decimals', label: '数值小数位', t: 'number' },
@@ -1089,23 +1098,42 @@ const CHART_FIELDS = [
   { k: 'detail.groupField', label: '点击图形→按该字段筛选', t: 'field', sheetOf: 'detail.sheet' },
 ];
 
+const TABLE_TYPE_OPTS = [
+  ['group', '分组统计表（按字段分组计数/求和）'],
+  ['cross', '交叉表（行字段 × 列字段）'],
+  ['list', '明细列表表（一行就是一条记录，列可自由增删）'],
+].map(([v, l]) => ({ v, l }));
+
 const TABLE_FIELDS = [
   { k: 'id', label: 'ID（英文，唯一）', t: 'text' },
   { k: 'title', label: '表格标题', t: 'text' },
   { k: 'visible', label: '显示', t: 'checkbox' },
-  { k: 'type', label: '表格类型', t: 'select', opts: [['group', '分组统计表'], ['cross', '交叉表（行×列）']].map(([v, l]) => ({ v, l })) },
+  { k: 'type', label: '表格类型', t: 'select', opts: TABLE_TYPE_OPTS },
   { k: 'sheet', label: '数据表', t: 'sheet' },
-  { k: 'groupBy', label: '分组字段', t: 'field', sheetOf: 'sheet' },
-  { k: 'rowField', label: '交叉表-行字段', t: 'field', sheetOf: 'sheet' },
-  { k: 'colField', label: '交叉表-列字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'groupBy', label: '【分组表】分组字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'rowField', label: '【交叉表】行字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'rowDateGroup', label: '【交叉表】行按月份分组', t: 'select', opts: [['', '不分组（按原值）'], ['month', '按「年-月」分组']].map(([v, l]) => ({ v, l })) },
+  { k: 'colField', label: '【交叉表】列字段', t: 'field', sheetOf: 'sheet' },
+  { k: 'colDateGroup', label: '【交叉表】列按月份分组', t: 'select', opts: [['', '不分组（按原值）'], ['month', '按「年-月」分组']].map(([v, l]) => ({ v, l })) },
+  { k: 'colSort', label: '【交叉表】列顺序', t: 'select', opts: [['', '数据出现顺序'], ['asc', '升序（月份推荐）'], ['desc', '降序']].map(([v, l]) => ({ v, l })) },
+  { k: 'value.agg', label: '【交叉表】单元格统计方式', t: 'select', opts: [['count', '计数'], ['sum', '求和'], ['avg', '平均'], ['max', '最大值'], ['min', '最小值'], ['distinct', '去重计数']].map(([v, l]) => ({ v, l })) },
+  { k: 'value.field', label: '【交叉表】单元格统计字段', t: 'field', sheetOf: 'sheet' },
   { k: 'showTotalColumn', label: '交叉表-显示合计列', t: 'checkbox' },
   { k: 'showTotalRow', label: '交叉表-显示合计行', t: 'checkbox' },
+  { k: 'hideEmptyRows', label: '交叉表-不显示「（空）」行（行字段还没补录时推荐）', t: 'checkbox' },
   { k: 'totalLabel', label: '合计行名称', t: 'text' },
-  { k: 'sortBy', label: '排序', t: 'select', opts: [['', '数据顺序'], ['valueDesc', '数值降序'], ['valueAsc', '数值升序'], ['nameAsc', '名称升序']].map(([v, l]) => ({ v, l })) },
+  { k: 'sortBy', label: '排序', t: 'select', opts: [['', '数据顺序'], ['valueDesc', '数值降序'], ['valueAsc', '数值升序'], ['nameAsc', '名称升序'], ['nameDesc', '名称降序'], ['field', '按指定列（明细表）']].map(([v, l]) => ({ v, l })) },
+  { k: 'sortField', label: '排序字段（排序=按指定列时生效）', t: 'field', sheetOf: 'sheet' },
   { k: 'limit', label: '最多显示行数（0=不限）', t: 'number' },
   { k: 'detail.sheet', label: '点击行→明细表', t: 'sheet' },
   { k: 'detail.filterField', label: '点击行→筛选字段', t: 'field', sheetOf: 'detail.sheet' },
 ];
+
+const LIST_RENDER_OPTS = [
+  ['text', '纯文本'],
+  ['progress', '进度条（阶段/百分比）'],
+  ['number', '数字（可设小数位）'],
+].map(([v, l]) => ({ v, l }));
 
 const SUBTITLE_TYPES = [
   { v: 'text', l: '普通文字（支持 {date}/{time}）' },
@@ -1357,7 +1385,7 @@ function renderConfigPanel() {
       <td><input type="checkbox" ${x.visible !== false ? 'checked' : ''}/></td>
       <td class="mono">${escapeHtml(x.id)}</td>
       <td>${escapeHtml(x.title || '')}</td>
-      <td>${x.type === 'cross' ? '交叉表' : '分组表'}</td>
+      <td>${x.type === 'cross' ? '交叉表' : x.type === 'list' ? '明细表' : '分组表'}</td>
       <td>${escapeHtml(x.sheet || '')}</td>
       <td class="cfg-op-cell">
         <button class="mini-btn" data-act="table-edit" data-i="${i}">编辑</button>
@@ -1742,6 +1770,9 @@ async function promptEditChart(idx) {
       if (!next.itemField) next.itemField = '经费项目';
       if (!next.field) next.field = '金额（元）';
     }
+    // 没选叠加图形就别留一个半空的 overlay 在配置里（看板会画出一条无名空线）
+    if (next.overlay && !next.overlay.type) delete next.overlay;
+    if (next.overlay && next.overlay.field === '') delete next.overlay.field;
     if (!next.detail) next.detail = {};
     CFG = collectConfigFromPanel();
     if (isNew) CFG.charts.push(next); else CFG.charts[idx] = next;
@@ -1757,7 +1788,8 @@ async function promptEditChart(idx) {
       sel.innerHTML = ['', ...list].map(s => `<option value="${escapeHtml(s)}" ${s === keep ? 'selected' : ''}>${s ? escapeHtml(s) : '（不指定）'}</option>`).join('');
     };
     if (sheetSel) sheetSel.addEventListener('change', () => {
-      refill('groupBy', ''); refill('field', ''); refill('stageField', ''); refill('itemField', ''); refill('detail.groupField', '');
+      refill('groupBy', ''); refill('field', ''); refill('stageField', ''); refill('itemField', '');
+      refill('overlay.field', ''); refill('detail.groupField', '');
     });
   });
 }
@@ -1775,15 +1807,27 @@ async function promptEditTable(idx) {
   window.__cfgDraft = draft;
   const colsRows = (draft.columns || []).map((c, i) => statsColHtml(c, i, draft.sheet)).join('');
   const crossRows = (draft.crossColumns || []).map((c, i) => crossColHtml(c, i)).join('');
+  // 明细列表表的列：字段 + 表头 + 渲染方式。用于「筹建中工会筹建进度」这类表，
+  // 用户在「列管理」给数据表加了列，到这里加一列就能在看板上显示出来。
+  const listRows = (draft.columns || []).map((c, i) => listColHtml(c, i, draft.sheet)).join('');
+  const whereRows = (draft.where || []).map((w, i) => whereRowHtml(w, i, draft.sheet)).join('');
 
   const html = `
     ${buildForm(TABLE_FIELDS, draft)}
+    <div class="cfg-sub-title">筛选条件（可选，全部满足才计入）</div>
+    <div id="where-rows">${whereRows}</div>
+    <button class="mini-btn" type="button" data-twact="add">+ 添加条件</button>
+    <p class="cfg-hint">例：只在「组建状态 = 筹建中」的行里出筹建进度表。</p>
     <div class="cfg-sub-title">统计列（分组表用）</div>
     <div id="stat-rows">${colsRows}</div>
     <button class="mini-btn" type="button" data-sact="add">+ 添加统计列</button>
-    <div class="cfg-sub-title">交叉列（交叉表用）</div>
+    <div class="cfg-sub-title">交叉列（交叉表用，留空=自动从数据派生）</div>
     <div id="cross-rows">${crossRows}</div>
     <button class="mini-btn" type="button" data-cact="add">+ 添加交叉列</button>
+    <div class="cfg-sub-title">明细列（明细列表表用：一行一条记录）</div>
+    <div id="list-rows">${listRows}</div>
+    <button class="mini-btn" type="button" data-lact="add">+ 添加明细列</button>
+    <p class="cfg-hint">明细列取的是数据表里的原始字段。想加阶段列（如「方案审批日期」）：先到「数据管理 → 列管理」给数据表加列，再回这里加一列。</p>
   `;
 
   await showMiniModal(isNew ? '新增统计表' : ('编辑统计表 · ' + (draft.title || draft.id)), html, async (root) => {
@@ -1792,17 +1836,49 @@ async function promptEditTable(idx) {
     if (!next.id) { toast('请填写 ID', 'error'); return false; }
     if ((CFG.tables || []).some((x, i) => x.id === next.id && i !== idx)) { toast('ID 已存在', 'error'); return false; }
 
-    next.columns = [];
-    root.querySelectorAll('#stat-rows [data-srow]').forEach(row => {
-      const label = row.querySelector('[data-s-label]').value;
-      const agg = row.querySelector('[data-s-agg]').value;
-      const field = row.querySelector('[data-s-field]') ? row.querySelector('[data-s-field]').value : '';
-      const dec = row.querySelector('[data-s-dec]') ? row.querySelector('[data-s-dec]').value : '';
-      const item = { label: label || E.AGG_LABEL[agg] || '数量', agg };
-      if (field) item.field = field;
-      if (dec !== '') item.decimals = Number(dec);
-      next.columns.push(item);
+    // 筛选条件
+    const where = [];
+    root.querySelectorAll('#where-rows [data-wrow]').forEach(row => {
+      const field = row.querySelector('[data-w-field]').value;
+      const op = row.querySelector('[data-w-op]').value;
+      const value = row.querySelector('[data-w-value]').value;
+      if (field) where.push({ field, op, value });
     });
+    next.where = where;
+
+    // 明细列表表的列：字段 + 表头 + 渲染方式（进度条要配阶段）
+    if (next.type === 'list') {
+      next.columns = [];
+      root.querySelectorAll('#list-rows [data-lrow]').forEach(row => {
+        const field = row.querySelector('[data-l-field]') ? row.querySelector('[data-l-field]').value : '';
+        if (!field) return;
+        const label = row.querySelector('[data-l-label]').value;
+        const render = row.querySelector('[data-l-render]') ? row.querySelector('[data-l-render]').value : 'text';
+        const dec = row.querySelector('[data-l-dec]') ? row.querySelector('[data-l-dec]').value : '';
+        const stages = row.querySelector('[data-l-stages]') ? row.querySelector('[data-l-stages]').value : '';
+        const item = { field, label: label || field };
+        if (render && render !== 'text') item.render = render;
+        if (dec !== '') item.decimals = Number(dec);
+        if (stages.trim()) item.stages = stages.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+        next.columns.push(item);
+      });
+      if (!next.columns.length) {
+        const H = ((DATA && DATA[next.sheet] && DATA[next.sheet].headers) || []).filter(h => h !== '序号');
+        next.columns = [{ field: H[0] || '', label: H[0] || '名称' }];
+      }
+    } else {
+      next.columns = [];
+      root.querySelectorAll('#stat-rows [data-srow]').forEach(row => {
+        const label = row.querySelector('[data-s-label]').value;
+        const agg = row.querySelector('[data-s-agg]').value;
+        const field = row.querySelector('[data-s-field]') ? row.querySelector('[data-s-field]').value : '';
+        const dec = row.querySelector('[data-s-dec]') ? row.querySelector('[data-s-dec]').value : '';
+        const item = { label: label || E.AGG_LABEL[agg] || '数量', agg };
+        if (field) item.field = field;
+        if (dec !== '') item.decimals = Number(dec);
+        next.columns.push(item);
+      });
+    }
     next.crossColumns = [];
     root.querySelectorAll('#cross-rows [data-crow]').forEach(row => {
       const key = row.querySelector('[data-c-key]').value;
@@ -1810,6 +1886,9 @@ async function promptEditTable(idx) {
       if (key) next.crossColumns.push({ key, label: label || key });
     });
     if (!next.columns.length && next.type === 'group') next.columns = [{ label: '数量', agg: 'count' }];
+    // 交叉表没指定统计方式时按「计数」走，空字段不留残值
+    if (next.value && (!next.value.agg || next.value.agg === 'count')) delete next.value;
+    if (next.value && next.value.field === '') delete next.value.field;
 
     CFG = collectConfigFromPanel();
     if (isNew) CFG.tables.push(next); else CFG.tables[idx] = next;
@@ -1824,7 +1903,14 @@ async function promptEditTable(idx) {
       const list = fieldOptions(sheetSel.value);
       sel.innerHTML = ['', ...list].map(s => `<option value="${escapeHtml(s)}" ${s === keep ? 'selected' : ''}>${s ? escapeHtml(s) : '（不指定）'}</option>`).join('');
     };
-    if (sheetSel) sheetSel.addEventListener('change', () => { refill('groupBy', ''); refill('rowField', ''); refill('colField', ''); refill('detail.filterField', ''); });
+    if (sheetSel) sheetSel.addEventListener('change', () => {
+      refill('groupBy', ''); refill('rowField', ''); refill('colField', '');
+      refill('sortField', ''); refill('value.field', ''); refill('detail.filterField', '');
+      root.querySelectorAll('#where-rows [data-w-field]').forEach(sel => {
+        sel.innerHTML = fieldOptions(sheetSel.value).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+      });
+      refillListFieldOptions(root, sheetSel.value);
+    });
 
     const statHost = root.querySelector('#stat-rows');
     statHost.addEventListener('click', ev => {
@@ -1836,6 +1922,16 @@ async function promptEditTable(idx) {
       const del = ev.target.closest('[data-cdel]');
       if (del) del.closest('[data-crow]').remove();
     });
+    const listHost = root.querySelector('#list-rows');
+    listHost.addEventListener('click', ev => {
+      const del = ev.target.closest('[data-ldel]');
+      if (del) del.closest('[data-lrow]').remove();
+    });
+    const whereHost = root.querySelector('#where-rows');
+    whereHost.addEventListener('click', ev => {
+      const del = ev.target.closest('[data-wdel]');
+      if (del) del.closest('[data-wrow]').remove();
+    });
     root.querySelector('[data-sact="add"]').addEventListener('click', () => {
       const i = statHost.querySelectorAll('[data-srow]').length;
       statHost.insertAdjacentHTML('beforeend', statsColHtml({ label: '数量', agg: 'count' }, i, sheetSel ? sheetSel.value : SHEETS[0]));
@@ -1844,6 +1940,37 @@ async function promptEditTable(idx) {
       const i = crossHost.querySelectorAll('[data-crow]').length;
       crossHost.insertAdjacentHTML('beforeend', crossColHtml({ key: '', label: '' }, i));
     });
+    root.querySelector('[data-lact="add"]').addEventListener('click', () => {
+      const i = listHost.querySelectorAll('[data-lrow]').length;
+      listHost.insertAdjacentHTML('beforeend', listColHtml({ field: '', label: '' }, i, sheetSel ? sheetSel.value : SHEETS[0]));
+    });
+    root.querySelector('[data-twact="add"]').addEventListener('click', () => {
+      const i = whereHost.querySelectorAll('[data-wrow]').length;
+      whereHost.insertAdjacentHTML('beforeend', whereRowHtml({ field: '', op: '==', value: '' }, i, sheetSel ? sheetSel.value : SHEETS[0]));
+    });
+  });
+}
+
+/** 明细列行：字段 + 表头 + 渲染方式 + 小数位 + 进度阶段 */
+function listColHtml(c, i, sheetName) {
+  const fields = fieldOptions(sheetName);
+  return `
+    <div class="where-row" data-lrow="${i}">
+      <select data-l-field>${['', ...fields].map(f => `<option value="${escapeHtml(f)}" ${f === c.field ? 'selected' : ''}>${f ? escapeHtml(f) : '（选字段）'}</option>`).join('')}</select>
+      <input type="text" data-l-label value="${escapeHtml(c.label || '')}" placeholder="表头名称" />
+      <select data-l-render>${LIST_RENDER_OPTS.map(o => `<option value="${o.v}" ${o.v === (c.render || 'text') ? 'selected' : ''}>${o.l}</option>`).join('')}</select>
+      <input type="number" data-l-dec value="${c.decimals === undefined ? '' : c.decimals}" placeholder="小数位" style="width:72px" />
+      <input type="text" data-l-stages value="${escapeHtml(Array.isArray(c.stages) ? c.stages.join(',') : '')}" placeholder="进度阶段，逗号分隔" style="width:180px" />
+      <button class="mini-btn danger" type="button" data-ldel>×</button>
+    </div>`;
+}
+
+/** 换数据表后，明细列里的字段下拉要跟着换 */
+function refillListFieldOptions(root, sheetName) {
+  const fields = fieldOptions(sheetName);
+  root.querySelectorAll('#list-rows [data-l-field]').forEach(sel => {
+    const keep = sel.value;
+    sel.innerHTML = ['', ...fields].map(f => `<option value="${escapeHtml(f)}" ${f === keep ? 'selected' : ''}>${f ? escapeHtml(f) : '（选字段）'}</option>`).join('');
   });
 }
 
@@ -2616,6 +2743,19 @@ function validateConfig(cfg) {
     if (!t.id) errs.push('有统计表未填写 ID');
     if (t.type === 'group' && !t.groupBy) errs.push(`统计表「${t.title || t.id}」未选择分组字段`);
     if (t.type === 'cross' && (!t.rowField || !t.colField)) errs.push(`交叉表「${t.title || t.id}」需选择行字段与列字段`);
+    // 明细列表表没列就渲染不出东西，直接拦住（别让看板静默变空）
+    if (t.type === 'list' && !(t.columns || []).some(c => c && c.field)) {
+      errs.push(`明细表「${t.title || t.id}」至少要有一列（每列选一个数据表字段）`);
+    }
+  });
+  // 月度分组 / 叠加系列：字段没选对不会报错，只会静默变成空图，提示出来
+  (cfg.charts || []).forEach(c => {
+    if (c.dateGroup === 'month' && !c.groupBy) {
+      warns.push(`图表「${c.id}」开了按月分组但没选分组字段（一般是日期列）`);
+    }
+    if (c.overlay && c.overlay.type && c.overlay.agg !== 'count' && !c.overlay.field) {
+      warns.push(`图表「${c.id}」的叠加系列要做「${E.AGG_LABEL[c.overlay.agg] || c.overlay.agg}」但没选字段，会一直显示 0`);
+    }
   });
   (cfg.metrics || []).forEach(m => {
     if (m.expr) {

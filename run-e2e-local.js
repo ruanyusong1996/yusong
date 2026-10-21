@@ -50,6 +50,24 @@ const PORT = process.env.E2E_PORT || '5321';
   process.env.SID_ADMIN = await login('admin', 'admin123');
   process.env.BASE = BASE;
 
+  // 等「配置升级」真正落盘后再做备份。
+  // 为什么必须等：upgradeConfigFromSeed() 是异步的，这里如果手快先拷了一份，
+  // E2E 末尾的「还原配置」就会把版本升级出来的新图表/新板块一起还原掉 ——
+  // 表现为「代码明明加了功能，测试却说页面上看不到」。
+  const seedV = JSON.parse(fs.readFileSync(path.join(ROOT, 'seed-config.json'), 'utf8')).version;
+  let upgraded = false;
+  for (let i = 0; i < 60 && !upgraded; i++) {
+    try {
+      const r = await fetch(`${BASE}/api/config`, { headers: { Cookie: `hdj_sid=${process.env.SID}` } });
+      if (r.ok) {
+        const c = await r.json();
+        upgraded = Number(c.seedVersion) >= Number(seedV);
+      }
+    } catch (_) {}
+    if (!upgraded) await new Promise(r => setTimeout(r, 150));
+  }
+  console.log(`[wrapper] 配置升级 ${upgraded ? `已落盘（seedVersion >= ${seedV}）` : '未完成，测试可能误判'}`);
+
   // E2E 末尾会还原配置，还原来源就是这份备份
   const backup = '/tmp/hdj-e2e-config-backup.json';
   fs.copyFileSync(path.join(WORK, 'server-config.json'), backup);

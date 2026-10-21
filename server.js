@@ -49,7 +49,7 @@ const CE = globalThis.ConfigEngine || {};
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -353,6 +353,65 @@ function ensureSheets(data) {
   return data;
 }
 
+/**
+ * 补齐「新版本才有的列」。
+ * 为什么需要：线上数据是老版本落盘的。v1.6 给 01-组织建设 加了
+ * 「当前进度 / 进度日期 / 工作负责人」、给 03-员工活动 加了「经办人」，
+ * 不补的话后台表格里根本没有这些列，筹建进度和工会干事就无从填起。
+ *
+ * 只增不删：已存在的列、以及用户自己在「列管理」里加的列一律不动。
+ * 两种行形态都要处理 —— 种子是数组行、用户在后台保存过的是对象行，
+ * 同一个文件里会混存，只处理一种就会出现「表头有了、值还是空的」。
+ * 这里**不碰 schema**：schema 由前端 normalizeSheet 从 BUILTIN_SCHEMA 补齐，
+ * 服务端只写一份残缺的 schema 反而会把「组建状态」等下拉框冲成纯文本框。
+ */
+function ensureColumns(data) {
+  const seed = readJsonSafe(SEED_FILE);
+  if (!seed || !data || typeof data !== 'object') return { data, added: [] };
+  const added = [];
+
+  Object.keys(seed).forEach(k => {
+    if (k === '_meta') return;
+    const s = seed[k], d = data[k];
+    if (!s || !d || !Array.isArray(s.headers) || !Array.isArray(d.headers)) return;
+    const seedH = s.headers.filter(h => h && h !== '序号');
+    const missing = seedH.filter(h => d.headers.indexOf(h) < 0);
+    if (!missing.length) return;
+
+    missing.forEach(name => {
+      // 插到「种子里排在它前面、且数据里已存在的那一列」之后，保持列顺序与种子一致
+      let anchor = -1;
+      for (let j = seedH.indexOf(name) - 1; j >= 0; j--) {
+        const p = d.headers.indexOf(seedH[j]);
+        if (p >= 0) { anchor = p; break; }
+      }
+      const at = anchor >= 0 ? anchor + 1 : d.headers.length;
+      d.headers.splice(at, 0, name);
+      (d.rows || []).forEach(r => {
+        if (Array.isArray(r)) {
+          while (r.length < at) r.push('');
+          r.splice(at, 0, '');
+        } else if (r && typeof r === 'object' && r[name] === undefined) {
+          r[name] = '';
+        }
+      });
+      added.push(`${k} → ${name}`);
+    });
+  });
+
+  return { data, added };
+}
+
+/** 启动时的字段迁移：只跑一次（补完就不再写盘），写前自动快照。 */
+async function migrateDataColumns() {
+  const raw = readJsonSafe(DATA_FILE);
+  if (!raw || typeof raw !== 'object') return;
+  const { added } = ensureColumns(raw);
+  if (!added.length) return;
+  await writeJsonAtomic(DATA_FILE, raw, 'add-columns');
+  console.log(`[migrate] 已为现有数据补齐 ${added.length} 个新列：${added.join('、')}`);
+}
+
 function readData() {
   const d = readJsonSafe(DATA_FILE);
   if (d) return ensureSheets(d);
@@ -382,6 +441,26 @@ async function upgradeConfigFromSeed() {
   const appliedV = Number(stored.seedVersion) || 0;
   if (appliedV >= seedV) return;
   const { cfg, added } = CE.mergeAdditions(stored, seed);
+
+  // v4 一次性修正：按需求删掉员工活动板块的「覆盖总人次」卡片。
+  // 为什么单独处理：mergeAdditions 只做加法，用户配置里已存在的 b-act-metrics 块
+  // 不会被改动，卡片会赖着不走。用 seedVersion 记账，用户之后想加回来不会被反复删。
+  if (appliedV < 4) {
+    let pulled = 0, hid = 0;
+    (cfg.modules || []).forEach(m => (m.columns || []).forEach(c => (c.blocks || []).forEach(b => {
+      if (b.type === 'metrics' && Array.isArray(b.metricIds) && b.metricIds.indexOf('act-coverage') >= 0) {
+        b.metricIds = b.metricIds.filter(x => x !== 'act-coverage');
+        pulled += 1;
+      }
+    })));
+    (cfg.metrics || []).forEach(m => {
+      if (m.id === 'act-coverage' && m.visible !== false) { m.visible = false; hid += 1; }
+    });
+    if (pulled || hid) {
+      added.push(`移除「覆盖总人次」卡片（${pulled} 处引用${hid ? '，指标已置为不显示（可在后台指标里彻底删除）' : ''}）`);
+    }
+  }
+
   cfg.seedVersion = seedV;
   const normalized = normalizeConfig(cfg).cfg;
   await writeJsonAtomic(CONFIG_FILE, normalized, 'seed-upgrade');
@@ -970,6 +1049,10 @@ const dataState = ensureDataFile();
     console.error('[migrate] 单位迁移失败:', e && e.message);
   }
 })();
+
+// 字段迁移（v1.6 新增列）：同样直接读磁盘上的真数据，补完立刻落盘。
+// 幂等：列都已存在时 ensureColumns 返回空数组，不会再写盘。
+migrateDataColumns().catch(e => console.error('[migrate] 字段迁移失败:', e && e.message));
 
 const configState = ensureConfigFile();
 ensureManagedFile(AUTH_FILE, null, '密码');

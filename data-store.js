@@ -59,6 +59,10 @@
       '职工人数': { type: 'number', min: 0 },
       '组建状态': { type: 'select', options: ['已组建', '筹建中'], required: true },
       '工会级别': { type: 'select', options: ['一级工会', '二级工会', '三级工会'], required: true },
+      // —— 筹建进度（v1.6）：只有「筹建中」的工会才填；想加阶段列可在后台「列管理」自行增加 ——
+      '当前进度': { type: 'select', options: ['未启动', '方案制定', '会员登记', '报批审批', '选举筹备', '已成立'] },
+      '进度日期': { type: 'date' },
+      '工作负责人': { type: 'text' },
       '备注': { type: 'textarea', full: true },
     },
     '02-走访慰问': {
@@ -79,6 +83,8 @@
       '活动类型': { type: 'select', options: ['社团活动', '节日主题活动', '属地关爱', '文体活动', '培训讲座', '公益活动', '技能竞赛'], required: true },
       '活动区域': { type: 'text' },
       '组织部门': { type: 'text' },
+      // 工会干事：与「02-走访慰问」同名，便于看板出「干事 × 月份」矩阵
+      '经办人': { type: 'text' },
       '覆盖人数': { type: 'number', min: 0 },
       '支出金额（元）': { type: 'number', min: 0 },
       '备注': { type: 'textarea', full: true },
@@ -177,9 +183,14 @@
         if (!(h in schema)) schema[h] = { type: 'text' };
       });
     } else {
-      // 有 schema 但缺字段的，也补默认
+      // 有 schema 但缺字段的，也补默认。
+      // 关键：新版本新增的列（如「当前进度」「经办人」）在老数据的 schema 里没有，
+      // 这里优先用 BUILTIN_SCHEMA 的定义补上，否则它们会退化成纯文本框，
+      // 「当前进度」的下拉阶段、「进度日期」的日期控件就都没了。
       headers.forEach(h => {
-        if (!(h in schema)) schema[h] = { type: 'text' };
+        if (!(h in schema)) {
+          schema[h] = (builtinFields && builtinFields[h]) ? clone(builtinFields[h]) : { type: 'text' };
+        }
       });
     }
     // 序号列固定为系统字段

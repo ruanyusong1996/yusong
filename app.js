@@ -386,7 +386,19 @@ function renderChartBlock(block) {
   }
 
   const list = E.groupRows(sheet, def);
-  inst.setOption(buildChartOption(def, list), true);
+  // 叠加系列（如「柱=人次 / 线=金额」）：用同一套月份分组再算一遍，按月份对齐取值
+  let overlay = null;
+  if (def.overlay && def.overlay.agg) {
+    const ovList = E.groupRows(sheet, Object.assign({}, def, {
+      agg: def.overlay.agg, field: def.overlay.field, scale: def.overlay.scale,
+    }));
+    const byName = new Map(ovList.map(x => [String(x.name), x.value]));
+    overlay = {
+      def: def.overlay,
+      values: list.map(x => (byName.has(String(x.name)) ? byName.get(String(x.name)) : 0)),
+    };
+  }
+  inst.setOption(buildChartOption(def, list, overlay), true);
 }
 
 /** 瀑布（桥梁）图的配色：期初 / 入账 / 支出 / 结余 */
@@ -507,7 +519,12 @@ function buildWaterfallOption(def, list) {
   };
 }
 
-function buildChartOption(def, list) {
+/**
+ * @param {object} def      图表配置
+ * @param {Array}  list     主系列 [{ name, value }]
+ * @param {?{def, values}} overlay 叠加系列（如柱=人次、线=金额），与主系列共用同一套分组
+ */
+function buildChartOption(def, list, overlay) {
   const T = theme();
   const type = def.type || 'bar';
   const labelShow = !(def.label && def.label.show === false);
@@ -573,39 +590,116 @@ function buildChartOption(def, list) {
     nameTextStyle: { color: T.muted || '#7E93BD' },
   });
 
+  const labelFn = (d) => (p) => {
+    const v = typeof p.value === 'object' ? p.value.value : p.value;
+    if (labelFormatter === '{c}') return d ? Number(v).toFixed(d) : String(v);
+    return labelFormatter.replace('{c}', String(v)).replace('{b}', String(p.name || ''));
+  };
+
+  const mainSeries = {
+    name: def.seriesName || (isLine ? '数值' : '数量'),
+    type: isLine ? 'line' : 'bar',
+    data: seriesData,
+    smooth: isLine,
+    symbolSize: isLine ? 8 : undefined,
+    label: {
+      show: labelShow,
+      position: isH ? 'right' : 'top',
+      color: T.accent || '#4DD8FF',
+      fontWeight: 700,
+      fontSize: 12,
+      formatter: labelFn(decimals),
+    },
+    lineStyle: isLine ? { color: colorAt(0), width: 2.5 } : undefined,
+    areaStyle: isLine ? {
+      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: 'rgba(77,216,255,0.35)' }, { offset: 1, color: 'rgba(77,216,255,0.02)' },
+      ]),
+    } : undefined,
+    barWidth: isH ? undefined : (def.barWidth || 36),
+  };
+
+  // 叠加系列（右轴）：柱/线都可以，默认线。金额列还没补录时是 0，图上就是一条贴底的线。
+  const ov = overlay && overlay.def ? overlay.def : null;
+  const ovDecimals = ov && typeof ov.decimals === 'number' ? ov.decimals : decimals;
+  const ovColor = (ov && ov.color) || palette()[4] || '#F59E0B';
+  const ovSeries = ov ? {
+    name: ov.name || '叠加指标',
+    type: ov.type === 'bar' ? 'bar' : 'line',
+    yAxisIndex: 1,
+    data: (overlay.values || []).map(v => Number(Number(v).toFixed(Math.max(0, Math.min(6, ovDecimals))))),
+    smooth: ov.type !== 'bar',
+    symbolSize: 7,
+    label: {
+      show: labelShow,
+      position: 'top',
+      color: ovColor,
+      fontWeight: 700,
+      fontSize: 12,
+      formatter: labelFn(ovDecimals),
+    },
+    lineStyle: ov.type === 'bar' ? undefined : { color: ovColor, width: 2.5 },
+    itemStyle: { color: ovColor },
+    barWidth: ov.type === 'bar' ? (ov.barWidth || 18) : undefined,
+  } : null;
+
+  const valueAxis2 = Object.assign({ type: 'value', position: 'right' }, axisStyle(0), {
+    name: def.overlayAxisName || '',
+    nameTextStyle: { color: T.muted || '#7E93BD' },
+    splitLine: { show: false },   // 两条轴的网格线重叠会糊成一片
+  });
+
   return {
     tooltip: Object.assign(tooltipStyle(), { trigger: 'axis', axisPointer: { type: isLine ? 'line' : 'shadow' } }),
+    legend: legendShow ? {
+      show: true,
+      data: ovSeries ? [mainSeries.name, ovSeries.name] : [mainSeries.name],
+      orient: legendPos === 'right' ? 'vertical' : 'horizontal',
+      bottom: legendPos === 'right' ? undefined : 0,
+      right: legendPos === 'right' ? 0 : undefined,
+      top: legendPos === 'right' ? 'middle' : undefined,
+      textStyle: { color: T.text || '#E6EEFF', fontSize: 12 },
+      itemWidth: 12, itemHeight: 12,
+    } : { show: false },
     grid: isH
       ? { left: 10, right: 40, top: 20, bottom: 20, containLabel: true }
-      : { left: 50, right: 30, top: 30, bottom: def.wrapLabels ? 60 : 50, containLabel: true },
-    xAxis: isH ? valueAxis : categoryAxis,
-    yAxis: isH ? categoryAxis : valueAxis,
-    series: [{
-      type: isLine ? 'line' : 'bar',
-      data: seriesData,
-      smooth: isLine,
-      symbolSize: isLine ? 8 : undefined,
-      label: {
-        show: labelShow,
-        position: isH ? 'right' : isLine ? 'top' : 'top',
-        color: T.accent || '#4DD8FF',
-        fontWeight: 700,
-        fontSize: 12,
-        formatter: (p) => {
-          const v = typeof p.value === 'object' ? p.value.value : p.value;
-          if (labelFormatter === '{c}') return decimals ? Number(v).toFixed(decimals) : String(v);
-          return labelFormatter.replace('{c}', String(v)).replace('{b}', String(p.name || ''));
-        },
+      : {
+        left: 50,
+        right: ovSeries ? 60 : 30,     // 右轴要留出位置，否则最后一根柱/数字会被裁掉
+        top: legendShow && legendPos !== 'right' ? 46 : 30,
+        bottom: def.wrapLabels ? 60 : 50,
+        containLabel: true,
       },
-      lineStyle: isLine ? { color: colorAt(0), width: 2.5 } : undefined,
-      areaStyle: isLine ? {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(77,216,255,0.35)' }, { offset: 1, color: 'rgba(77,216,255,0.02)' },
-        ]),
-      } : undefined,
-      barWidth: isH ? undefined : (def.barWidth || 36),
-    }],
+    xAxis: isH ? valueAxis : categoryAxis,
+    yAxis: isH ? categoryAxis : (ovSeries ? [valueAxis, valueAxis2] : valueAxis),
+    series: ovSeries ? [mainSeries, ovSeries] : [mainSeries],
   };
+}
+
+/** 明细表单元格：支持进度条 / 数字 / 纯文本三种渲染方式 */
+function renderListCell(v, colDef) {
+  const empty = v === null || v === undefined || String(v).trim() === '';
+  if (colDef.render === 'progress') {
+    // 还没填进度就只显示「—」，不要画一条空槽 —— 一排空槽看着像页面坏了
+    if (empty) return '<span class="cell-empty">—</span>';
+    const stages = Array.isArray(colDef.stages) ? colDef.stages : [];
+    let pct = null;
+    const n = Number(String(v).replace(/[,%]/g, '').trim());
+    if (Number.isFinite(n)) pct = Math.max(0, Math.min(100, n));
+    else if (stages.length) {
+      const i = stages.indexOf(String(v).trim());
+      if (i >= 0) pct = stages.length > 1 ? (i / (stages.length - 1)) * 100 : 100;
+    }
+    // 认不出的文字也照原样显示（不吞数据），只是没有进度条
+    return `<div class="pg-cell">
+      <div class="pg-text">${escapeHtml(String(v))}</div>
+      ${pct === null ? '' : `<div class="pg-bar"><i style="width:${pct.toFixed(1)}%"></i></div>`}
+    </div>`;
+  }
+  if (colDef.render === 'number') {
+    return empty ? '—' : E.fmtNum(v, typeof colDef.decimals === 'number' ? colDef.decimals : 0);
+  }
+  return empty ? '<span class="cell-empty">—</span>' : escapeHtml(String(v));
 }
 
 function renderTableBlock(block) {
@@ -618,6 +712,30 @@ function renderTableBlock(block) {
   const built = E.buildTable(sheet, def);
   const cols = built.head || [];
   const html = ['<table class="data-table"><thead><tr>'];
+
+  if (def.type === 'list') {
+    // 明细（列表）表：一行 = 一个工会，列 = 配置里指定的字段（可自由增删）
+    const colDefs = built.columns || [];
+    cols.forEach(c => html.push(`<th>${escapeHtml(c)}</th>`));
+    html.push('</tr></thead><tbody>');
+    built.rows.forEach(r => {
+      const filter = def.detail && def.detail.filterField && r.detailValue
+        ? ` data-detail="${escapeHtml(def.detail.sheet || def.sheet)}" data-filter='${escapeHtml(JSON.stringify({ key: def.detail.filterField, value: r.detailValue }))}'`
+        : '';
+      const cls = filter ? ' class="clickable"' : '';
+      html.push(`<tr${cls}${filter}>`);
+      r.cells.forEach((v, i) => {
+        html.push(`<td>${renderListCell(v, colDefs[i] || {})}</td>`);
+      });
+      html.push('</tr>');
+    });
+    if (!built.rows.length) {
+      html.push(`<tr><td colspan="${Math.max(1, cols.length)}" class="cell-empty">（没有符合条件的数据）</td></tr>`);
+    }
+    html.push('</tbody></table>');
+    host.innerHTML = html.join('');
+    return;
+  }
 
   if (def.type === 'cross') {
     html.push(`<th>${escapeHtml(def.rowField || '')}</th>`);
@@ -634,7 +752,10 @@ function renderTableBlock(block) {
       if (def.showTotalColumn !== false) html.push(`<td class="cell-value">${r.total}</td>`);
       html.push('</tr>');
     });
-    if (def.showTotalRow !== false) {
+    if (!built.rows.length) {
+      html.push(`<tr><td colspan="${cols.length + (def.showTotalColumn !== false ? 2 : 1)}" class="cell-empty">（暂无数据${def.hideEmptyRows ? '，请先在后台填写「' + escapeHtml(def.rowField || '') + '」列' : ''}）</td></tr>`);
+    }
+    if (built.rows.length && def.showTotalRow !== false) {
       html.push(`<tr class="row-total"><td>${escapeHtml(def.totalLabel || '合计')}</td>`);
       (built.colTotals || []).forEach(c => html.push(`<td class="cell-value">${c}</td>`));
       if (def.showTotalColumn !== false) html.push(`<td class="cell-value">${built.grand}</td>`);
