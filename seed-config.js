@@ -7,7 +7,7 @@
 window.SEED_CONFIG = {
   // 模板版本：服务端启动时用它判断「要不要把新增的图表/模块块补进线上已有配置」。
   // 加了新功能就 +1，用户自己删掉的东西不会被反复加回来。
-  version: 4,
+  version: 5,
 
   /* ---------- 文字 ---------- */
   text: {
@@ -91,15 +91,30 @@ window.SEED_CONFIG = {
       sheet: '03-员工活动', agg: 'sum', field: '支出金额（元）', where: [],
       detail: { sheet: '03-员工活动' },
     },
+    // 经费口径（v1.7）：期初金额 + 入账金额 − 支出合计（元） = 当前结余
+    //   支出合计（元） = 经费表里手工登记的支出 + 走访慰问汇入 + 员工活动汇入
+    //   老数据里只有「年初金额」没有「期初金额」时用 fallbackField 兜底。
     {
-      id: 'fund-initial', label: '年初金额合计', unit: '万元', decimals: 2, visible: true,
-      sheet: '04-经费收支', agg: 'sum', field: '年初金额', scale: 0.0001, where: [],
+      id: 'fund-initial', label: '期初金额合计', unit: '万元', decimals: 2, visible: true,
+      sheet: '04-经费收支', agg: 'sum', field: '期初金额',
+      fallbackField: '年初金额', scale: 0.0001, where: [],
       detail: { sheet: '04-经费收支' },
     },
     {
       id: 'fund-spend', label: '支出金额合计', unit: '万元', decimals: 2, visible: true,
-      sheet: '04-经费收支', agg: 'sum', field: '支出金额', scale: 0.0001, where: [],
+      sheet: '04-经费收支', agg: 'sum', field: '支出合计（元）',
+      fallbackField: '支出金额', scale: 0.0001, where: [],
       detail: { sheet: '04-经费收支' },
+    },
+    {
+      id: 'fund-visit-in', label: '走访慰问支出汇入', unit: '万元', decimals: 2, visible: true,
+      sheet: '04-经费收支', agg: 'sum', field: '慰问支出汇入（元）', scale: 0.0001, where: [],
+      detail: { sheet: '02-走访慰问' },
+    },
+    {
+      id: 'fund-act-in', label: '员工活动支出汇入', unit: '万元', decimals: 2, visible: true,
+      sheet: '04-经费收支', agg: 'sum', field: '活动支出汇入（元）', scale: 0.0001, where: [],
+      detail: { sheet: '03-员工活动' },
     },
     {
       id: 'fund-balance', label: '当前结余', unit: '万元', decimals: 2, visible: true,
@@ -406,6 +421,7 @@ window.SEED_CONFIG = {
           id: 'c-fund-1', width: 12,
           blocks: [
             { id: 'b-fund-metrics', type: 'metrics', visible: true, title: '', metricIds: ['fund-initial', 'fund-spend', 'fund-balance'] },
+            { id: 'b-fund-inflow', type: 'metrics', visible: true, title: '业务支出汇入（自动汇总，单位：万元）', metricIds: ['fund-visit-in', 'fund-act-in'] },
           ],
         },
         {

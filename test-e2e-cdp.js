@@ -206,8 +206,9 @@ class CDP {
       'span 12', 'span 12', 'span 12']);
 
   // 13 → 12：v1.6 按需求删掉了「覆盖总人次」卡片
-  t('指标卡片总数 = 12',
-    await cdp.evalJs('document.querySelectorAll("#modules-root [data-metric]").length'), 12);
+  // 12 → 14：v1.7 新增「走访慰问支出汇入 / 员工活动支出汇入」两张卡片
+  t('指标卡片总数 = 14',
+    await cdp.evalJs('document.querySelectorAll("#modules-root [data-metric]").length'), 14);
 
   // 指标取值
   const metricVals = await cdp.evalJs(`(function(){
@@ -224,9 +225,12 @@ class CDP {
   // v1.6：「覆盖总人次」卡片已按需求删除，改用「活动支出总额」占位验证（金额列待补录时为 0）
   t('活动支出总额 = 0（金额列待补录）', metricVals['act-spend'], '0');
   t('慰问品总金额 = 0（金额列待补录）', metricVals['visit-amount'], '0');
-  t('当前结余(2位小数) = 66.75', metricVals['fund-balance'], '66.75');
+  // v1.7 起「当前结余」是派生值：期初金额 + 入账金额 − 支出合计（元），
+  // 不再是手工维护的「当前结余（万元）」列。种子已对齐线上口径，合计 66.68 万元
+  // （旧基线 66.75 里含一条脏数据：哈尔滨一店工会的结余多记了 900 元）。
+  t('当前结余(2位小数) = 66.68', metricVals['fund-balance'], '66.68');
   t('★公式指标 组建完成率 = 65.0%', metricVals['org-rate'], '65.0');
-  t('★公式指标 平均每会结余 = 3.34 万元', metricVals['fund-per-org'], '3.34');
+  t('★公式指标 平均每会结余 = 3.33 万元', metricVals['fund-per-org'], '3.33');
 
   // 图表
   // 4 张普通图 + v1.3 新增的瀑布（桥梁）图
@@ -331,7 +335,8 @@ class CDP {
   t('配置面板 8 个分区', cfgCounts.sectionCount, 8);
   t('分区标题 = ①~⑧', cfgCounts.sectionTitles.map(s => s.slice(0, 1)),
     ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧']);
-  t('指标编辑行 = 13', cfgCounts.metricRows, 13);
+  // 13 → 14：v1.7 多了「走访慰问支出汇入 / 员工活动支出汇入」两个指标
+  t('指标编辑行 = 14', cfgCounts.metricRows, 14);
   t('图表编辑行 = 7（含瀑布图 + 两张月度图）', cfgCounts.chartRows, 7);
   t('统计表编辑行 = 6（含筹建进度表 + 两张干事矩阵）', cfgCounts.tableRows, 6);
   t('模块卡片 = 4', cfgCounts.modCards, 4);
@@ -1260,6 +1265,413 @@ class CDP {
   t('行字段 = 经办人', crossEditor.rowField, '经办人');
   t('列字段 = 慰问日期', crossEditor.colField, '慰问日期');
   await closeMini();
+
+  // ==================== 【E8】批量删除（v1.7） ====================
+  console.log('\n【E8】批量删除：勾选 → 计数 → 一次性整表写回');
+  await gotoAdmin();
+  await clickTab('02-走访慰问', 'document.querySelectorAll("#admin-table tbody tr").length>0', '走访慰问表(批量删除)');
+  const bd0 = await cdp.evalJs(`(function(){
+    var rows = document.querySelectorAll('#admin-table tbody tr').length;
+    return {
+      rows: rows,
+      checks: document.querySelectorAll('#admin-table tbody input.row-check').length,
+      hasAll: !!document.getElementById('check-all'),
+      btnHidden: document.getElementById('btn-delete-selected').classList.contains('hidden'),
+      selText: (document.getElementById('sel-count')||{}).textContent || '',
+    };
+  })()`);
+  console.log('    初始:', JSON.stringify(bd0));
+  t('每行都有勾选框', bd0.checks > 0 && bd0.checks === bd0.rows, true);
+  t('表头有「全选」框', bd0.hasAll, true);
+  t('未勾选时不显示删除按钮', bd0.btnHidden, true);
+  t('未勾选时计数为空', bd0.selText, '');
+
+  await cdp.evalJs(`(function(){var c=document.getElementById('check-all'); c.checked=true; c.dispatchEvent(new Event('change',{bubbles:true})); return true;})()`);
+  await sleep(700);
+  const bd1 = await cdp.evalJs(`(function(){
+    return {
+      btnHidden: document.getElementById('btn-delete-selected').classList.contains('hidden'),
+      btnText: document.getElementById('btn-delete-selected').textContent.trim(),
+      selText: (document.getElementById('sel-count')||{}).textContent || '',
+      highlighted: document.querySelectorAll('#admin-table tbody tr.row-selected').length,
+    };
+  })()`);
+  console.log('    全选后:', JSON.stringify(bd1));
+  t('全选后显示删除按钮', bd1.btnHidden, false);
+  t('按钮上带勾选条数', bd1.btnText, '🗑 删除所选（' + bd0.rows + '）');
+  t('提示显示已选条数', bd1.selText, '已选 ' + bd0.rows + ' 条');
+  t('被勾选的行有高亮样式', bd1.highlighted, bd0.rows);
+
+  await cdp.evalJs(`(function(){var c=document.getElementById('check-all'); c.checked=false; c.dispatchEvent(new Event('change',{bubbles:true})); return true;})()`);
+  await sleep(700);
+  t('取消全选后按钮收起',
+    await cdp.evalJs(`document.getElementById('btn-delete-selected').classList.contains('hidden')`), true);
+
+  // 勾 3 行 → 确认 → 行数 -3（必须一次写回，不能逐行 PUT）
+  await cdp.evalJs(`(function(){
+    [...document.querySelectorAll('#admin-table tbody input.row-check')].slice(0,3).forEach(function(cb){
+      cb.checked = true; cb.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    return true;
+  })()`);
+  await sleep(600);
+  t('勾选 3 行后按钮计数 = 3',
+    await cdp.evalJs(`document.getElementById('btn-delete-selected').textContent.trim()`), '🗑 删除所选（3）');
+  await cdp.evalJs(`document.getElementById('btn-delete-selected').click()`);
+  await waitFor('!document.getElementById("confirm-modal").classList.contains("hidden")', '批量删除确认框');
+  await cdp.evalJs(`document.getElementById('confirm-ok').click()`);
+  await sleep(2000);
+  const bd2 = await cdp.evalJs(`(async()=>{
+    var d = await (await fetch('/api/data',{credentials:'include'})).json();
+    return {
+      rows: d['02-走访慰问'].rows.length,
+      btnHidden: document.getElementById('btn-delete-selected').classList.contains('hidden'),
+      selText: (document.getElementById('sel-count')||{}).textContent || '',
+    };
+  })()`);
+  console.log('    删除后:', JSON.stringify(bd2));
+  t('批量删除后行数 -3', bd2.rows, bd0.rows - 3);
+  t('删除后勾选状态清空（按钮收起、计数归零）', [bd2.btnHidden, bd2.selText].join('|'), 'true|');
+
+  // 确认框点「取消」不许动数据
+  const bdCancel0 = await cdp.evalJs(`(async()=>{var d=await (await fetch('/api/data',{credentials:'include'})).json(); return d['02-走访慰问'].rows.length;})()`);
+  await cdp.evalJs(`(function(){
+    [...document.querySelectorAll('#admin-table tbody input.row-check')].slice(0,2).forEach(function(cb){
+      cb.checked = true; cb.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    document.getElementById('btn-delete-selected').click();
+    return true;
+  })()`);
+  await waitFor('!document.getElementById("confirm-modal").classList.contains("hidden")', '取消场景确认框');
+  await cdp.evalJs(`document.getElementById('confirm-cancel').click()`);
+  await sleep(1400);
+  const bdCancel1 = await cdp.evalJs(`(async()=>{var d=await (await fetch('/api/data',{credentials:'include'})).json(); return d['02-走访慰问'].rows.length;})()`);
+  t('点「取消」不会删数据', bdCancel1, bdCancel0);
+
+  // 搜索后再全选：只能删筛选出来的行，不能误伤未显示的行（批量删除最容易踩的坑）
+  const bdSearch = await cdp.evalJs(`(async()=>{
+    var d = await (await fetch('/api/data',{credentials:'include'})).json();
+    var H = d['02-走访慰问'].headers, rows = d['02-走访慰问'].rows;
+    var iRegion = H.indexOf('所在大区');
+    var term = String(rows[0][H[iRegion]] || '').trim() || '（无）';
+    var matches = rows.filter(function(r){ return String(r[H[iRegion]]||'').trim() === term; }).length;
+    var s = document.getElementById('admin-search');
+    s.value = term; s.dispatchEvent(new Event('input',{bubbles:true}));
+    await new Promise(function(r){ setTimeout(r,900); });
+    return { term: term, matches: matches, shown: document.querySelectorAll('#admin-table tbody tr').length, total: rows.length };
+  })()`);
+  console.log('    搜索后:', JSON.stringify(bdSearch));
+  t('搜索后只显示匹配行', bdSearch.shown, bdSearch.matches);
+  t('搜索后显示行数 ≤ 全表行数', bdSearch.shown <= bdSearch.total, true);
+  t('搜索确实筛掉了部分行（不是全表）', bdSearch.shown < bdSearch.total, true);
+
+  await cdp.evalJs(`(function(){var c=document.getElementById('check-all'); c.checked=true; c.dispatchEvent(new Event('change',{bubbles:true})); return true;})()`);
+  await sleep(800);
+  t('搜索状态下全选只勾中筛选结果',
+    await cdp.evalJs(`document.getElementById('btn-delete-selected').textContent.trim()`),
+    '🗑 删除所选（' + bdSearch.matches + '）');
+  await cdp.evalJs(`document.getElementById('btn-delete-selected').click()`);
+  await waitFor('!document.getElementById("confirm-modal").classList.contains("hidden")', '筛选态批量删除确认框');
+  await cdp.evalJs(`document.getElementById('confirm-ok').click()`);
+  await sleep(2000);
+  const bdSearchAfter = await cdp.evalJs(`(async()=>{
+    var d = await (await fetch('/api/data',{credentials:'include'})).json();
+    return { total: d['02-走访慰问'].rows.length };
+  })()`);
+  t('筛选态批量删除只删掉筛选出的行',
+    bdSearchAfter.total, bdSearch.total - bdSearch.matches);
+  // 清掉搜索词，恢复全表视图
+  await cdp.evalJs(`(function(){
+    var s=document.getElementById('admin-search'); s.value=''; s.dispatchEvent(new Event('input',{bubbles:true}));
+    return true;
+  })()`);
+  await sleep(700);
+
+  // ==================== 【E9】收集端口填报端（v1.7） ====================
+  console.log('\n【E9】收集端口：独立填报入口 / 账号隔离 / 提报人盖章');
+  await cdp.send('Page.navigate', { url: BASE + '/collect.html' });
+  await waitFor('document.readyState==="complete" && !!document.getElementById("cl-user")', 'collect.html 就绪');
+  await sleep(900);
+
+  const clInit = await cdp.evalJs(`(function(){
+    var vis = function(el){ return !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none'; };
+    return {
+      loginVisible: vis(document.getElementById('collect-login')),
+      mainHidden: !vis(document.getElementById('collect-main')),
+      hasUser: !!document.getElementById('cl-user'),
+      hasPass: !!document.getElementById('cl-pass'),
+      errHidden: document.getElementById('cl-error').classList.contains('hidden'),
+    };
+  })()`);
+  console.log('    未登录:', JSON.stringify(clInit));
+  t('未登录时只显示登录卡', clInit.loginVisible && clInit.mainHidden, true);
+  t('有用户名 / 密码输入框', clInit.hasUser && clInit.hasPass, true);
+
+  // 错误密码 → 报错且不进主界面
+  await cdp.evalJs(`(function(){
+    document.getElementById('cl-user').value='port1';
+    document.getElementById('cl-pass').value='wrong-pass';
+    document.getElementById('cl-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    return true;
+  })()`);
+  await sleep(1200);
+  t('密码错误时给出提示',
+    await cdp.evalJs(`!document.getElementById('cl-error').classList.contains('hidden')`), true);
+  t('密码错误时不进入填报界面',
+    await cdp.evalJs(`document.getElementById('collect-main').classList.contains('hidden')`), true);
+
+  // 正确密码 → 进入填报界面
+  await cdp.evalJs(`(function(){
+    document.getElementById('cl-user').value='port1';
+    document.getElementById('cl-pass').value='gh123456';
+    document.getElementById('cl-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    return true;
+  })()`);
+  await waitFor('!document.getElementById("collect-main").classList.contains("hidden")', '端口登录成功');
+  await sleep(1200);
+  const clMain = await cdp.evalJs(`(function(){
+    return {
+      portName: (document.getElementById('cm-port-name')||{}).textContent || '',
+      tabs: [...document.querySelectorAll('#cm-tabs .cm-tab')].map(function(b){ return b.textContent.trim(); }),
+      fields: document.querySelectorAll('#cm-form .cm-field').length,
+      required: document.querySelectorAll('#cm-form .cm-req').length,
+    };
+  })()`);
+  console.log('    登录后:', JSON.stringify(clMain));
+  t('显示当前端口名', /收集端口\s*1/.test(clMain.portName), true);
+  t('可填报表 = 组织建设 / 走访慰问 / 员工活动 三张',
+    clMain.tabs.length, 3);
+  t('填报表单有字段且必填项带 *',
+    clMain.fields > 0 && clMain.required > 0, true);
+
+  // 切到「走访慰问」并填一条（费用列支账户 = 经费收支表里第一个工会）
+  // 注意：此刻是**端口会话**，读不了 /api/data（403），候选工会名从 /api/port/sheets 的
+  // accounts 里取 —— 它本来就是给填报端用的下拉候选。
+  const targetUnion = await cdp.evalJs(`(async()=>{
+    var r = await (await fetch('/api/port/sheets',{credentials:'include'})).json();
+    var accts = ((r.sheets||[]).find(function(s){ return Array.isArray(s.accounts) && s.accounts.length; })||{}).accounts || [];
+    return String(accts[0] || '').trim();
+  })()`);
+  await cdp.evalJs(`(function(){
+    var b=[...document.querySelectorAll('#cm-tabs .cm-tab')].find(function(x){ return x.textContent.indexOf('走访慰问')>=0; });
+    if(b) b.click();
+    return !!b;
+  })()`);
+  await sleep(1200);
+  const clFill = await cdp.evalJs(`(function(){
+    var f=document.getElementById('cm-form');
+    var set=function(name,val){ var el=f.querySelector('#fld-'+CSS.escape(name)); if(!el) return false; el.value=val; return true; };
+    return {
+      type: set('慰问类型','其他'),
+      name: set('员工姓名','E2E测试员工'),
+      region: set('所在大区','E2E大区'),
+      dept: set('员工所在部门/门店','E2E门店'),
+      date: set('慰问日期','2026-09-20'),
+      acct: set('费用列支账户', ${JSON.stringify(targetUnion)}),
+      amt: set('慰问物品金额（元）','500'),
+      staff: set('经办人','E2E干事'),
+      note: set('备注','E2E汇入测试-走访'),
+    };
+  })()`);
+  console.log('    填表:', JSON.stringify(clFill), '目标工会=', targetUnion);
+  t('走访慰问表单含「费用列支账户」列', clFill.acct, true);
+  t('走访慰问表单含「慰问物品金额（元）」列', clFill.amt, true);
+  t('走访慰问表单必需字段齐全',
+    [clFill.type, clFill.name, clFill.region, clFill.dept].every(Boolean), true);
+
+  // 「费用列支账户」要挂上来自 04 表「工会名称」的下拉候选，否则填报人只能手打、容易对不上
+  const acctOpts = await cdp.evalJs(`(function(){
+    var dl = document.getElementById('acct-options');
+    var el = document.getElementById('fld-' + '费用列支账户');
+    return {
+      n: dl ? dl.querySelectorAll('option').length : -1,
+      hasList: el ? el.getAttribute('list') : null,
+    };
+  })()`);
+  console.log('    账户候选:', JSON.stringify(acctOpts));
+  t('「费用列支账户」挂了下拉候选', acctOpts.hasList, 'acct-options');
+  t('候选条目 = 经费收支表里的工会数（7）', acctOpts.n, 7);
+
+  await cdp.evalJs(`document.getElementById('cm-submit').click()`);
+  await sleep(2200);
+  const clAfter = await cdp.evalJs(`(async()=>{
+    var r = await (await fetch('/api/port/records?sheet=' + encodeURIComponent('02-走访慰问'),{credentials:'include'})).json();
+    var rows = (r.records||[]).map(function(x){ return x.row; });
+    var mine = rows.filter(function(x){ return String(x['备注']||'').indexOf('E2E汇入测试-走访')>=0; });
+    return {
+      count: (r.records||[]).length,
+      mineCount: mine.length,
+      reporter: mine[0] ? String(mine[0]['提报人']||'') : '',
+      amount: mine[0] ? Number(mine[0]['慰问物品金额（元）']||0) : null,
+      tableRows: document.querySelectorAll('#cm-table tbody tr').length,
+    };
+  })()`);
+  console.log('    提交后:', JSON.stringify(clAfter));
+  t('填报后能在「我提交的数据」里看到', clAfter.mineCount, 1);
+  t('记录自动盖上提报人 = 端口名', clAfter.reporter, '收集端口 1');
+  t('金额按填写值入库', clAfter.amount, 500);
+  t('我的记录表格已渲染', clAfter.tableRows >= 1, true);
+
+  // 端口会话不能读后台数据接口（越权必须 403）
+  const clForbid = await cdp.evalJs(`(async()=>{
+    var d = await fetch('/api/data',{credentials:'include'});
+    return d.status;
+  })()`);
+  // 端口会话不是看板/后台角色，requireView 直接 401（拿不到任何后台数据）
+  t('端口会话访问后台 /api/data 被拒绝', clForbid, 401);
+
+  // 端口不能改别人的数据（伪造 index → 403）
+  const clForbid2 = await cdp.evalJs(`(async()=>{
+    var r = await fetch('/api/port/update',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheet:'02-走访慰问',index:0,row:{备注:'越权'}})});
+    return r.status;
+  })()`);
+  t('端口改别人的记录被拒绝', clForbid2, 403);
+
+  // 退出 → 回到登录卡
+  await cdp.evalJs(`document.getElementById('cm-logout').click()`);
+  await sleep(1200);
+  t('退出后回到登录卡',
+    await cdp.evalJs(`!document.getElementById('collect-login').classList.contains('hidden')`), true);
+
+  // ==================== 【E10】02/03 支出汇入 04-经费收支（v1.7） ====================
+  console.log('\n【E10】业务支出汇入经费收支：走访慰问 + 员工活动');
+  // 恢复成管理员会话（上面端口登录把 cookie 顶掉了）
+  await cdp.evalJs(`(async()=>{
+    await fetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:'admin',password:'admin123'})});
+    return true;
+  })()`);
+  await sleep(600);
+
+  const inflow1 = await cdp.evalJs(`(async()=>{
+    var get = async function(){ return (await (await fetch('/api/data',{credentials:'include'})).json()); };
+    var d0 = await get();
+    var fund = d0['04-经费收支'], H = fund.headers;
+    var pick = function(r,n){ var i=H.indexOf(n); return i<0?0:Number(r[H[i]]||0); };
+    var target = String(fund.rows[0][H[H.indexOf('工会名称')]]||'').trim();
+    var before = {
+      visitIn: pick(fund.rows[0],'慰问支出汇入（元）'),
+      actIn: pick(fund.rows[0],'活动支出汇入（元）'),
+      total: pick(fund.rows[0],'支出合计（元）'),
+      bal: pick(fund.rows[0],'当前结余（元）'),
+    };
+    var H2 = d0['02-走访慰问'].headers, row = {};
+    H2.forEach(function(h){ row[h]=''; });
+    row['慰问类型'] = '其他'; row['员工姓名'] = 'E2E汇入员工';
+    row['所在大区'] = 'E2E大区'; row['员工所在部门/门店'] = 'E2E门店';
+    row['费用列支账户'] = target;
+    row['慰问物品金额（元）'] = 500; row['备注'] = 'E2E汇入测试-走访';
+    d0['02-走访慰问'].rows = (d0['02-走访慰问'].rows||[]).concat([row]);
+    var put = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d0)});
+    var d1 = await get(), H1 = d1['04-经费收支'].headers;
+    var p = function(r,n){ var i=H1.indexOf(n); return i<0?null:Number(r[H1[i]]||0); };
+    return {
+      putOk: put.ok, target: target, before: before,
+      after: {
+        visitIn: p(d1['04-经费收支'].rows[0],'慰问支出汇入（元）'),
+        actIn: p(d1['04-经费收支'].rows[0],'活动支出汇入（元）'),
+        total: p(d1['04-经费收支'].rows[0],'支出合计（元）'),
+        bal: p(d1['04-经费收支'].rows[0],'当前结余（元）'),
+      },
+    };
+  })()`);
+  console.log('    走访汇入:', JSON.stringify(inflow1));
+  t('写入成功', inflow1.putOk, true);
+  t('「慰问支出汇入（元）」增加 500',
+    inflow1.after.visitIn, inflow1.before.visitIn + 500);
+  t('「支出合计（元）」同步增加 500',
+    inflow1.after.total, inflow1.before.total + 500);
+  t('「当前结余（元）」相应减少 500',
+    inflow1.after.bal, inflow1.before.bal - 500);
+  t('不影响「活动支出汇入（元）」',
+    inflow1.after.actIn, inflow1.before.actIn);
+
+  const inflow2 = await cdp.evalJs(`(async()=>{
+    var get = async function(){ return (await (await fetch('/api/data',{credentials:'include'})).json()); };
+    var d0 = await get();
+    var fund = d0['04-经费收支'], H = fund.headers;
+    var pick = function(r,n){ var i=H.indexOf(n); return i<0?0:Number(r[H[i]]||0); };
+    var target = String(fund.rows[0][H[H.indexOf('工会名称')]]||'').trim();
+    var before = {
+      visitIn: pick(fund.rows[0],'慰问支出汇入（元）'),
+      actIn: pick(fund.rows[0],'活动支出汇入（元）'),
+      total: pick(fund.rows[0],'支出合计（元）'),
+      bal: pick(fund.rows[0],'当前结余（元）'),
+    };
+    var H3 = d0['03-员工活动'].headers, row = {};
+    H3.forEach(function(h){ row[h]=''; });
+    row['活动日期'] = '2026-09-25'; row['活动内容'] = 'E2E汇入活动';
+    row['活动形式'] = '线下活动'; row['活动类型'] = '文体活动';
+    row['费用列支账户'] = target;
+    row['支出金额（元）'] = 300; row['备注'] = 'E2E汇入测试-活动';
+    d0['03-员工活动'].rows = (d0['03-员工活动'].rows||[]).concat([row]);
+    var put = await fetch('/api/data',{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(d0)});
+    var d1 = await get(), H1 = d1['04-经费收支'].headers;
+    var p = function(r,n){ var i=H1.indexOf(n); return i<0?null:Number(r[H1[i]]||0); };
+    return {
+      putOk: put.ok, before: before,
+      after: {
+        visitIn: p(d1['04-经费收支'].rows[0],'慰问支出汇入（元）'),
+        actIn: p(d1['04-经费收支'].rows[0],'活动支出汇入（元）'),
+        total: p(d1['04-经费收支'].rows[0],'支出合计（元）'),
+        bal: p(d1['04-经费收支'].rows[0],'当前结余（元）'),
+      },
+    };
+  })()`);
+  console.log('    活动汇入:', JSON.stringify(inflow2));
+  t('写入成功(2)', inflow2.putOk, true);
+  t('「活动支出汇入（元）」增加 300',
+    inflow2.after.actIn, inflow2.before.actIn + 300);
+  t('「支出合计（元）」再增加 300',
+    inflow2.after.total, inflow2.before.total + 300);
+  t('「当前结余（元）」再减少 300',
+    inflow2.after.bal, inflow2.before.bal - 300);
+  t('不影响「慰问支出汇入（元）」',
+    inflow2.after.visitIn, inflow2.before.visitIn);
+
+  // 三个派生列在后台表里可见但只读（编辑弹窗里不出现）
+  await gotoAdmin();
+  await clickTab('04-经费收支', 'document.querySelectorAll("#admin-table tbody tr").length>0', '经费收支表(派生列)');
+  const derivedCols = await cdp.evalJs(`(function(){
+    var head = [...document.querySelectorAll('#admin-table thead th')].map(function(x){ return x.textContent.trim(); });
+    return {
+      head: head,
+      hasVisitIn: head.indexOf('慰问支出汇入（元）') >= 0,
+      hasActIn: head.indexOf('活动支出汇入（元）') >= 0,
+      hasTotal: head.indexOf('支出合计（元）') >= 0,
+    };
+  })()`);
+  console.log('    04 表头:', JSON.stringify(derivedCols.head));
+  t('04 表有「慰问支出汇入（元）」列', derivedCols.hasVisitIn, true);
+  t('04 表有「活动支出汇入（元）」列', derivedCols.hasActIn, true);
+  t('04 表有「支出合计（元）」列', derivedCols.hasTotal, true);
+
+  await cdp.evalJs(`document.querySelector('#admin-table tbody tr td.col-actions button[data-action="edit"]').click()`);
+  await waitFor('!document.getElementById("mini-modal").classList.contains("hidden")', '04 表编辑弹窗');
+  await sleep(500);
+  const derivedInEditor = await cdp.evalJs(`(function(){
+    var labels = [...document.querySelectorAll('#mini-modal-content .form-field')].map(function(x){
+      var l = x.querySelector('label,span,div'); return l ? l.textContent.trim() : '';
+    });
+    var ids = [...document.querySelectorAll('#mini-modal-content [id^="fld-"]')].map(function(x){ return x.id.slice(4); });
+    return { ids: ids, hasVisitIn: ids.indexOf('慰问支出汇入（元）') >= 0, hasTotal: ids.indexOf('支出合计（元）') >= 0 };
+  })()`);
+  console.log('    04 编辑弹窗字段:', JSON.stringify(derivedInEditor.ids));
+  t('派生列不可手工编辑（编辑弹窗里没有）',
+    derivedInEditor.hasVisitIn || derivedInEditor.hasTotal, false);
+  await closeMini();
+
+  // 「提报人」列在后台可见，且填报端写进来的那条带着提报人
+  await gotoAdmin();
+  await clickTab('02-走访慰问', 'document.querySelectorAll("#admin-table tbody tr").length>0', '走访慰问表(提报人)');
+  const rep = await cdp.evalJs(`(async()=>{
+    var head = [...document.querySelectorAll('#admin-table thead th')].map(function(x){ return x.textContent.trim(); });
+    var d = await (await fetch('/api/data',{credentials:'include'})).json();
+    var rows = d['02-走访慰问'].rows.filter(function(r){ return String(r['备注']||'').indexOf('E2E汇入测试-走访')>=0; });
+    return { hasReporter: head.indexOf('提报人') >= 0, count: rows.length, reporter: rows[0] ? String(rows[0]['提报人']||'') : '' };
+  })()`);
+  console.log('    提报人:', JSON.stringify(rep));
+  t('后台表里有「提报人」列', rep.hasReporter, true);
+  t('后台能看到这条数据是谁提报的', rep.reporter, '收集端口 1');
 
   console.log('\n【F】运行期 JS 异常');
   console.log('    捕获异常数:', consoleErrs.length, consoleErrs.slice(0, 3));

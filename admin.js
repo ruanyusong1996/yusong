@@ -27,6 +27,8 @@ const fundMoney = v => (Number.isFinite(Number(v)) ? Number(v).toFixed(FUND_DECI
 
 let currentTab = SHEETS[0];
 let DATA = null;
+/** 批量删除：当前表里被勾选的**真实行号**（切换表/搜索后按行号保留，不会串行） */
+let SEL = new Set();
 let SCHEMA = null;  // 当前 sheet 的 schema: { headers, schema: { [field]: def } }
 let CFG = null;     // 看板配置（文字/主题/布局/指标/图表/表格）
 
@@ -109,7 +111,42 @@ function confirmDialog(message, title = '确认操作') {
 }
 
 // ============ 数据刷新 ============
-const PSEUDO_TABS = ['__config', '__security'];
+const PSEUDO_TABS = ['__config', '__ports', '__security'];
+
+/** 收集端口后端接口的薄封装（后台管理用，走后台会话 cookie） */
+const PortsAPI = {
+  async list() {
+    const r = await fetch('/api/ports', { credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `读取端口列表失败（HTTP ${r.status}）`);
+    return d.ports || [];
+  },
+  async save(ports) {
+    const r = await fetch('/api/ports', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ports }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `保存端口配置失败（HTTP ${r.status}）`);
+    return d.ports || [];
+  },
+  async clear(id) {
+    const r = await fetch('/api/ports/clear', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `清空失败（HTTP ${r.status}）`);
+    return d;
+  },
+};
+
+/** 收集端口可以填报的数据表（与 server.js 的 PORT_SHEETS 保持一致） */
+const PORT_SHEETS = ['01-组织建设', '02-走访慰问', '03-员工活动'];
 function isPseudoTab(t) { return PSEUDO_TABS.indexOf(t) >= 0; }
 
 function refreshAll() {
@@ -196,11 +233,24 @@ function renderTable() {
     );
   }
 
-  // 表头
-  thead.innerHTML = '<tr>' + headers.map(h => {
+  // 表头（最前面加一列全选）
+  const allChecked = filtered.length > 0 && filtered.every(r => SEL.has(rows.indexOf(r)));
+  thead.innerHTML = '<tr>'
+    + `<th class="col-check"><input type="checkbox" id="check-all"${allChecked ? ' checked' : ''} title="全选 / 取消全选" /></th>`
+    + headers.map(h => {
     const cls = (schema[h] && schema[h].auto) ? 'col-index' : '';
     return `<th class="${cls}">${escapeHtml(h)}</th>`;
   }).join('') + '<th class="col-actions">操作</th></tr>';
+
+  const ca = document.getElementById('check-all');
+  if (ca) {
+    ca.addEventListener('change', () => {
+      if (ca.checked) filtered.forEach(r => SEL.add(rows.indexOf(r)));
+      else filtered.forEach(r => SEL.delete(rows.indexOf(r)));
+      SEL = new Set([...SEL].filter(i => i >= 0 && i < rows.length));
+      renderTable();
+    });
+  }
 
   // 行
   if (filtered.length === 0) {
@@ -210,6 +260,8 @@ function renderTable() {
     empty.classList.add('hidden');
     tbody.innerHTML = filtered.map((row, displayIdx) => {
       const realIndex = rows.indexOf(row);
+      const checked = SEL.has(realIndex);
+      const checkCell = `<td class="col-check"><input type="checkbox" class="row-check" data-index="${realIndex}"${checked ? ' checked' : ''} title="选中这一行" /></td>`;
       const cells = headers.map(h => {
         const def = schema[h] || {};
         const v = row[h];
@@ -222,7 +274,7 @@ function renderTable() {
         const content = isEmpty ? '—' : escapeHtml(v);
         return `<td class="${cls}">${content}</td>`;
       }).join('');
-      return `<tr>${cells}<td class="col-actions">
+      return `<tr class="${checked ? 'row-selected' : ''}">${checkCell}${cells}<td class="col-actions">
         <button class="btn btn-ghost btn-row" data-action="edit" data-index="${realIndex}">编辑</button>
         <button class="btn btn-danger btn-row" data-action="delete" data-index="${realIndex}">删除</button>
       </td></tr>`;
@@ -230,6 +282,48 @@ function renderTable() {
   }
 
   info.textContent = `共 ${rows.length} 条${q ? ` · 筛选 ${filtered.length} 条` : ''}`;
+  updateBatchBar();
+}
+
+/* ------------------------------------------------------- 批量删除 -------- */
+
+function updateBatchBar() {
+  const btn = document.getElementById('btn-delete-selected');
+  const cnt = document.getElementById('sel-count');
+  const n = SEL.size;
+  if (btn) {
+    btn.classList.toggle('hidden', n === 0);
+    btn.textContent = `🗑 删除所选（${n}）`;
+  }
+  if (cnt) cnt.textContent = n ? `已选 ${n} 条` : '';
+}
+
+function clearSelection() { SEL = new Set(); updateBatchBar(); }
+
+async function deleteSelected() {
+  if (!SEL.size) return;
+  const sheet = DATA[currentTab];
+  const n = SEL.size;
+  const label = SHEET_TITLES[currentTab] || currentTab;
+  const yes = await confirmDialog(
+    `将删除「${label}」中勾选的 ${n} 条记录，删除后不可恢复。建议先到「安全设置 → 备份」确认有最近快照。`,
+    '批量删除确认'
+  );
+  if (!yes) return;
+  setSync('syncing');
+  try {
+    // 一次性整表写回：连着多次 PUT 会互相覆盖（历史教训），这里必须合并成一次
+    const kept = sheet.rows.filter((_, i) => !SEL.has(i));
+    await DashboardStore.updateSheet(currentTab, kept);
+    clearSelection();
+    toast(`已删除 ${n} 条记录`);
+    refreshAll();
+    setTimeout(() => refreshSyncBadge(), 600);
+  } catch (err) {
+    console.error(err);
+    toast('删除失败：' + (err.message || err), 'error');
+    setSync('error', '删除失败');
+  }
 }
 
 // ============ 数字输入：默认最多 2 位小数（字段可单独指定，如瀑布表用 3 位）============
@@ -767,26 +861,28 @@ function bindTabs() {
       const dataPanel = document.getElementById('panel-data');
       const cfgPanel = document.getElementById('panel-config');
       const secPanel = document.getElementById('panel-security');
+      const portPanel = document.getElementById('panel-ports');
+      const panels = [dataPanel, cfgPanel, secPanel, portPanel];
+      const show = p => { panels.forEach(x => x && x.classList.add('hidden')); p && p.classList.remove('hidden'); };
 
       if (currentTab === '__config') {
-        dataPanel.classList.add('hidden');
-        secPanel.classList.add('hidden');
-        cfgPanel.classList.remove('hidden');
+        show(cfgPanel);
         CFG = DashboardStore.getConfig() || CFG;
         renderConfigPanel();
         return;
       }
+      if (currentTab === '__ports') {
+        show(portPanel);
+        renderPortsPanel();
+        return;
+      }
       if (currentTab === '__security') {
-        dataPanel.classList.add('hidden');
-        cfgPanel.classList.add('hidden');
-        secPanel.classList.remove('hidden');
+        show(secPanel);
         renderSecurityPanel();
         return;
       }
 
-      cfgPanel.classList.add('hidden');
-      secPanel.classList.add('hidden');
-      dataPanel.classList.remove('hidden');
+      show(dataPanel);
       document.getElementById('admin-search').value = '';
       // 「新增工会组织」在组织建设表与瀑布表都要有（新成立工会两边都得体现）；
       // 「瀑布图编辑」只有瀑布表需要。
@@ -804,9 +900,22 @@ function bindTabs() {
 function bindToolbar() {
   document.getElementById('admin-search').addEventListener('input', renderTable);
   document.getElementById('btn-add').addEventListener('click', () => openEditor('add'));
+  document.getElementById('btn-delete-selected').addEventListener('click', deleteSelected);
   document.getElementById('btn-schema').addEventListener('click', openSchemaEditor);
   document.getElementById('btn-add-union').addEventListener('click', () => promptAddUnion());
   document.getElementById('btn-fund-editor').addEventListener('click', () => openFundEditor());
+
+  // 勾选框是 change 事件，单独委托（行重新渲染后状态从 SEL 还原）
+  document.querySelector('#admin-table').addEventListener('change', (e) => {
+    const cb = e.target.closest('input.row-check');
+    if (!cb) return;
+    const i = parseInt(cb.dataset.index, 10);
+    if (Number.isNaN(i)) return;
+    if (cb.checked) SEL.add(i); else SEL.delete(i);
+    updateBatchBar();
+    const tr = cb.closest('tr');
+    if (tr) tr.classList.toggle('row-selected', cb.checked);
+  });
 
   document.querySelector('#admin-table').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-action]');
@@ -2586,7 +2695,10 @@ async function promptAddUnion() {
   const levelOpts = (orgSchema['工会级别'] && orgSchema['工会级别'].options) || ['一级工会', '二级工会', '三级工会'];
   const statusOpts = (orgSchema['组建状态'] && orgSchema['组建状态'].options) || ['已组建', '筹建中'];
   // 入账项目不该把「上年结转」列进来（那是期初用的）
-  const projOpts = ((DashboardStore.BUILTIN_SCHEMA[FUND_SHEET]['经费项目'] || {}).options || ['上级工会反拨'])
+  // 兜底：schema.js 没加载出来时 BUILTIN_SCHEMA 会是空对象，这里不能让它把整段代码炸掉，
+  // 否则点「＋ 新增工会组织」只会毫无反应、连报错都看不见。
+  const fundBuiltin = (DashboardStore.BUILTIN_SCHEMA && DashboardStore.BUILTIN_SCHEMA[FUND_SHEET]) || {};
+  const projOpts = ((fundBuiltin['经费项目'] || {}).options || ['上级工会反拨'])
     .filter(o => o !== '上年结转');
   const defaultProj = projOpts.indexOf('上级工会反拨') >= 0 ? '上级工会反拨' : projOpts[0];
 
@@ -3001,6 +3113,165 @@ async function refreshStorageSection() {
 
   const rf = document.getElementById('store-refresh');
   if (rf) rf.addEventListener('click', refreshStorageSection);
+}
+
+// ============ 收集端口管理 ============
+/**
+ * 10 个收集端口共用一个后台：管理员在这里给每个端口设「用户名 / 密码 / 启用 / 能填哪张表」，
+ * 再看每个端口提报了多少条。端口之间互不干扰——各自只能看到自己提报的数据。
+ */
+const PORTS_STATE = { list: [], dirty: false };
+
+const PORT_SHEETS_LABEL = {
+  '01-组织建设': '组织建设',
+  '02-走访慰问': '走访慰问',
+  '03-员工活动': '员工活动',
+};
+
+async function renderPortsPanel() {
+  const root = document.getElementById('ports-root');
+  if (!root) return;
+  root.innerHTML = '<p class="cfg-hint">正在读取端口配置…</p>';
+  try {
+    PORTS_STATE.list = await PortsAPI.list();
+    PORTS_STATE.dirty = false;
+    paintPortsPanel();
+  } catch (e) {
+    root.innerHTML = `<p class="cfg-hint cfg-warn">${escapeHtml(e.message || String(e))}</p>`;
+  }
+}
+
+function paintPortsPanel() {
+  const root = document.getElementById('ports-root');
+  if (!root) return;
+  const list = PORTS_STATE.list || [];
+  const defaultPwd = 'gh123456';
+
+  root.innerHTML = `
+    <section class="cfg-section">
+      <div class="cfg-head">📥 收集端口（10 个独立填报账号）</div>
+      <div class="cfg-body">
+        <p class="cfg-hint">
+          每个端口有独立的用户名与密码，登录后只能看到并修改<b>自己提报</b>的数据，
+          每条数据会自动盖上「提报人」戳，后台这边一眼就能看出是谁报的。<br/>
+          建议：把端口名改成实际填报人/门店（如「哈尔滨一店 张伟」），再把用户名密码发给对方。
+        </p>
+        <p class="cfg-hint cfg-warn">
+          ⚠️ 初始密码统一为 <code>${defaultPwd}</code>，请在下发前逐个改成各自的密码。
+        </p>
+        <div class="cfg-actions">
+          <button class="mini-btn" type="button" id="ports-refresh">刷新</button>
+          <button class="mini-btn" type="button" id="ports-save">保存端口配置</button>
+          <a class="mini-btn" href="./collect.html" target="_blank" rel="noopener">打开填报页</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="cfg-section">
+      <div class="cfg-head">端口列表</div>
+      <div class="cfg-body">
+        <div class="ports-table-wrap">
+          <table class="cfg-table ports-table">
+            <thead>
+              <tr>
+                <th style="width:52px">#</th>
+                <th style="width:180px">端口名</th>
+                <th style="width:150px">用户名</th>
+                <th style="width:150px">重置密码</th>
+                <th style="width:74px">启用</th>
+                <th>可填报的表</th>
+                <th style="width:86px">提报数</th>
+                <th style="width:86px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${list.map((p, i) => `
+                <tr data-port-row="${i}">
+                  <td>${p.index != null ? p.index : (i + 1)}</td>
+                  <td><input type="text" class="ports-input" data-port-field="name" data-port-id="${escapeHtml(p.id)}" value="${escapeHtml(p.name || '')}" placeholder="如：哈尔滨一店 张伟" /></td>
+                  <td><input type="text" class="ports-input" data-port-field="username" data-port-id="${escapeHtml(p.id)}" value="${escapeHtml(p.username || '')}" placeholder="登录用户名" /></td>
+                  <td><input type="password" class="ports-input" data-port-field="password" data-port-id="${escapeHtml(p.id)}" placeholder="留空则不修改" autocomplete="new-password" /></td>
+                  <td><input type="checkbox" class="ports-check" data-port-field="enabled" data-port-id="${escapeHtml(p.id)}"${p.enabled ? ' checked' : ''} /></td>
+                  <td class="ports-sheets">
+                    ${PORT_SHEETS.map(k => `
+                      <label class="ports-sheet">
+                        <input type="checkbox" data-port-field="sheet" data-port-id="${escapeHtml(p.id)}" value="${escapeHtml(k)}"${(p.sheets || []).indexOf(k) >= 0 ? ' checked' : ''} />
+                        <span>${escapeHtml(PORT_SHEETS_LABEL[k] || k)}</span>
+                      </label>`).join('')}
+                  </td>
+                  <td class="ports-count">${p.count || 0}</td>
+                  <td><button class="mini-btn danger" type="button" data-port-field="clear" data-port-id="${escapeHtml(p.id)}"${p.count ? '' : ' disabled'}>清空</button></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.getElementById('ports-refresh').addEventListener('click', () => {
+    PORTS_STATE.dirty = false;
+    renderPortsPanel();
+  });
+  document.getElementById('ports-save').addEventListener('click', savePorts);
+  root.querySelectorAll('[data-port-field="clear"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.portId;
+      const p = (PORTS_STATE.list || []).find(x => x.id === id);
+      const yes = await confirmDialog(
+        `将删除端口「${(p && p.name) || id}」提报的全部 ${(p && p.count) || 0} 条记录（其它端口的数据不受影响）。删除前会自动生成快照，可在「安全设置 → 备份」里找回。`,
+        '清空端口数据'
+      );
+      if (!yes) return;
+      try {
+        const r = await PortsAPI.clear(id);
+        toast(`已清空 ${r.removed} 条记录`);
+        await renderPortsPanel();
+      } catch (err) { toast(err.message || String(err), 'error'); }
+    });
+  });
+
+  // 任何改动都标脏，提示用户记得保存
+  root.querySelectorAll('input').forEach(el => {
+    el.addEventListener('input', markPortsDirty);
+    el.addEventListener('change', markPortsDirty);
+  });
+}
+
+function markPortsDirty() { PORTS_STATE.dirty = true; }
+
+async function savePorts() {
+  const root = document.getElementById('ports-root');
+  if (!root) return;
+  const list = (PORTS_STATE.list || []).map(p => {
+    const pick = (sel) => {
+      const el = root.querySelector(sel + '[data-port-id="' + CSS.escape(p.id) + '"]');
+      return el ? el.value : '';
+    };
+    const sheets = [...root.querySelectorAll('input[data-port-field="sheet"][data-port-id="' + CSS.escape(p.id) + '"]:checked')]
+      .map(x => x.value);
+    const en = root.querySelector('input[data-port-field="enabled"][data-port-id="' + CSS.escape(p.id) + '"]');
+    return {
+      id: p.id,
+      name: pick('input[data-port-field="name"]'),
+      username: pick('input[data-port-field="username"]'),
+      password: pick('input[data-port-field="password"]'),
+      enabled: !!(en && en.checked),
+      sheets,
+    };
+  });
+
+  try {
+    setSync('syncing');
+    await PortsAPI.save(list);
+    PORTS_STATE.dirty = false;
+    toast('端口配置已保存');
+    await renderPortsPanel();
+    setTimeout(refreshSyncBadge, 600);
+  } catch (e) {
+    toast('保存失败：' + (e.message || e), 'error');
+    setSync('error', '保存失败');
+  }
 }
 
 // ============ 启动 ============

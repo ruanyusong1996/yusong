@@ -1,0 +1,159 @@
+/* ===== 收集端口填报页样式 =====
+ * 与管理后台（admin.css）刻意区分：这里是给各门店/区域填报人用的，
+ * 只做「选表 → 填 → 提交 → 看自己提交过什么」，不做配置、不做批量操作。
+ */
+
+.collect-body {
+  margin: 0;
+  min-height: 100vh;
+  background: #0b1a2b;
+  color: #e8f4ff;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* ---------------- 登录 ---------------- */
+.collect-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.cl-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 40px 32px 32px;
+  border-radius: 18px;
+  background: rgba(18, 40, 66, 0.92);
+  border: 1px solid rgba(93, 197, 255, 0.22);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.cl-logo { font-size: 44px; line-height: 1; }
+.cl-title { margin: 12px 0 6px; font-size: 21px; font-weight: 700; }
+.cl-sub { margin: 0 0 24px; font-size: 13px; color: #8fb4d4; }
+.cl-form { text-align: left; }
+
+.cl-label {
+  display: block;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #a8cbe8;
+}
+
+.cl-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 190, 240, 0.3);
+  background: rgba(8, 22, 40, 0.85);
+  color: #e8f4ff;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+.cl-input:focus { outline: none; border-color: #4dd8ff; }
+
+.cl-error { color: #ff8a8a; font-size: 13px; margin: 0 0 12px; }
+.cl-submit { width: 100%; padding: 12px; font-size: 15px; }
+
+/* ---------------- 主界面 ---------------- */
+.collect-main { padding: 20px 24px 48px; max-width: 1180px; margin: 0 auto; }
+
+.cm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.cm-title { margin: 0; font-size: 22px; }
+.cm-sub { margin: 4px 0 0; font-size: 13px; color: #8fb4d4; }
+.cm-actions { display: flex; gap: 8px; }
+
+.cm-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.cm-tab {
+  padding: 9px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 190, 240, 0.28);
+  background: rgba(15, 35, 58, 0.7);
+  color: #b9d8f2;
+  font-size: 14px;
+  cursor: pointer;
+}
+.cm-tab.active {
+  background: linear-gradient(135deg, #1c7fd0, #46c7f5);
+  border-color: transparent;
+  color: #fff;
+}
+
+.cm-main { display: flex; flex-direction: column; gap: 18px; }
+
+.cm-card {
+  border-radius: 14px;
+  background: rgba(16, 36, 60, 0.8);
+  border: 1px solid rgba(93, 197, 255, 0.16);
+  padding: 20px 22px 22px;
+}
+.cm-card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.cm-card-title { margin: 0; font-size: 16px; }
+.cm-card-hint { font-size: 12px; color: #7fa8c9; }
+
+/* 表单：单列自适应，字段多了自动两列 */
+.cm-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px 18px;
+}
+.cm-field { display: flex; flex-direction: column; gap: 6px; }
+.cm-field.full { grid-column: 1 / -1; }
+.cm-field > label { font-size: 12.5px; color: #a8cbe8; }
+.cm-req { color: #ff7b7b; margin-left: 3px; }
+.cm-ctl {
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(120, 190, 240, 0.28);
+  background: rgba(8, 22, 40, 0.85);
+  color: #e8f4ff;
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.cm-ctl:focus { outline: none; border-color: #4dd8ff; }
+textarea.cm-ctl { min-height: 76px; resize: vertical; }
+.cm-tip { font-size: 11.5px; color: #6f97b8; }
+
+.cm-form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* 我的记录 */
+.cm-list-wrap { overflow-x: auto; }
+.cm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cm-table th, .cm-table td {
+  padding: 9px 11px;
+  text-align: left;
+  border-bottom: 1px solid rgba(93, 197, 255, 0.12);
+  white-space: nowrap;
+}
+.cm-table th { color: #8fb4d4; font-weight: 600; font-size: 12px; }
+.cm-table tbody tr:hover { background: rgba(77, 216, 255, 0.06); }
+.cm-empty { padding: 26px; text-align: center; color: #6f97b8; font-size: 13px; }
+
+.cm-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: rgba(77, 216, 255, 0.14);
+  color: #7fd8ff;
+}
+.cm-row-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 5px; }

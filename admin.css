@@ -274,6 +274,52 @@
 .admin-table .empty-cell { color: #7E93BD; font-style: italic; }
 .admin-table .col-index { color: #4DD8FF; font-weight: 600; }
 
+/* 批量删除：勾选列 */
+.admin-table .col-check {
+  width: 42px;
+  text-align: center;
+}
+.admin-table .col-check input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #4DD8FF;
+}
+.admin-table tbody tr.row-selected td {
+  background: rgba(77, 216, 255, 0.14) !important;
+}
+
+/* ---------------- 收集端口管理 ---------------- */
+.ports-table-wrap { overflow-x: auto; }
+.ports-table { min-width: 900px; }
+.ports-table th, .ports-table td { vertical-align: middle; }
+.ports-input {
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 190, 240, 0.28);
+  background: rgba(8, 22, 40, 0.85);
+  color: #e8f4ff;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.ports-input:focus { outline: none; border-color: #4dd8ff; }
+.ports-check { width: 16px; height: 16px; cursor: pointer; accent-color: #4dd8ff; }
+.ports-sheets { white-space: normal; }
+.ports-sheet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 10px 2px 0;
+  font-size: 12.5px;
+  color: #b9d8f2;
+  cursor: pointer;
+}
+.ports-sheet input { cursor: pointer; accent-color: #4dd8ff; }
+.ports-count { text-align: center; color: #4dd8ff; font-weight: 600; }
+.mini-btn.danger { border-color: rgba(255, 120, 120, 0.5); color: #ff9b9b; }
+.mini-btn.danger:disabled { opacity: .4; cursor: not-allowed; }
+
 .admin-empty {
   padding: 60px 24px;
   text-align: center;

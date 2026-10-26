@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>工会数据 · 填报端口</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📥</text></svg>" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./collect.css" />
+</head>
+<body class="collect-body">
+
+  <!-- 登录 -->
+  <section id="collect-login" class="collect-login">
+    <div class="cl-card">
+      <div class="cl-logo">📥</div>
+      <h1 class="cl-title">工会数据填报端口</h1>
+      <p class="cl-sub">请输入管理员下发的账号与密码</p>
+      <form id="cl-form" class="cl-form">
+        <label class="cl-label">用户名<input id="cl-user" type="text" autocomplete="username" class="cl-input" placeholder="如 port1" /></label>
+        <label class="cl-label">密码<input id="cl-pass" type="password" autocomplete="current-password" class="cl-input" placeholder="请输入密码" /></label>
+        <p id="cl-error" class="cl-error hidden">—</p>
+        <button type="submit" class="btn btn-primary cl-submit">登 录</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- 填报主界面 -->
+  <section id="collect-main" class="collect-main hidden">
+    <header class="cm-header">
+      <div>
+        <h1 class="cm-title">📥 数据填报</h1>
+        <p class="cm-sub" id="cm-port-name">—</p>
+      </div>
+      <div class="cm-actions">
+        <button class="btn btn-ghost" id="cm-creds">修改账号密码</button>
+        <button class="btn btn-ghost" id="cm-logout">退出登录</button>
+      </div>
+    </header>
+
+    <nav class="cm-tabs" id="cm-tabs"></nav>
+
+    <main class="cm-main">
+      <div class="cm-card">
+        <div class="cm-card-head">
+          <h2 class="cm-card-title" id="cm-sheet-title">—</h2>
+          <span class="cm-card-hint" id="cm-sheet-hint"></span>
+        </div>
+        <form id="cm-form" class="cm-form"></form>
+        <div class="cm-form-actions">
+          <button type="button" class="btn btn-ghost" id="cm-reset">清空表单</button>
+          <button type="button" class="btn btn-primary" id="cm-submit">提交填报</button>
+        </div>
+      </div>
+
+      <div class="cm-card">
+        <div class="cm-card-head">
+          <h2 class="cm-card-title">我提交的数据</h2>
+          <span class="cm-card-hint" id="cm-count">—</span>
+        </div>
+        <div class="cm-list-wrap">
+          <table class="cm-table" id="cm-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+          <div id="cm-empty" class="cm-empty hidden">还没有提交过数据</div>
+        </div>
+      </div>
+    </main>
+  </section>
+
+  <!-- 确认对话框 -->
+  <div id="confirm-modal" class="modal-backdrop hidden">
+    <div class="modal-panel confirm-panel">
+      <div class="modal-header"><h2 class="modal-title" id="confirm-title">确认操作</h2></div>
+      <div class="confirm-body"><p id="confirm-message">是否继续？</p></div>
+      <div class="confirm-actions">
+        <button class="btn btn-ghost" id="confirm-cancel">取消</button>
+        <button class="btn btn-danger" id="confirm-ok">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="./collect.js"></script>
+</body>
+</html>

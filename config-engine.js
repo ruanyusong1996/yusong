@@ -611,17 +611,17 @@
       // 保留 2 位小数（0.01 元）：与经费收支表「元」列的精度一致
       const r2 = v => Math.round(v * 100) / 100;
       // 期初行总是生成（哪怕为 0），方便后台直接改金额，不用先新增行
-      out.push({ 工会名称: name, 收支类型: '期初', 经费项目: '上年结转', '金额（元）': r2(o.initial), 备注: '由经费收支表年初金额自动带入，请核对' });
+      out.push({ 工会名称: name, 收支类型: '期初', 经费项目: '上年结转', '金额（元）': round2(o.initial), 备注: '由经费收支表年初金额自动带入，请核对' });
       if (o.income) {
         const byItem = new Map();
         o.items.filter(i => i.stage === 'income').forEach(i => {
           byItem.set(i.item, (byItem.get(i.item) || 0) + i.value);
         });
         [...byItem.entries()].forEach(([item, v]) => {
-          out.push({ 工会名称: name, 收支类型: '入账', 经费项目: item, '金额（元）': r2(v), 备注: '由经费收支表收入记录自动带入' });
+          out.push({ 工会名称: name, 收支类型: '入账', 经费项目: item, '金额（元）': round2(v), 备注: '由经费收支表收入记录自动带入' });
         });
       }
-      if (o.expense) out.push({ 工会名称: name, 收支类型: '支出', 经费项目: '经费支出', '金额（元）': r2(o.expense), 备注: '由经费收支表支出金额自动带入' });
+      if (o.expense) out.push({ 工会名称: name, 收支类型: '支出', 经费项目: '经费支出', '金额（元）': round2(o.expense), 备注: '由经费收支表支出金额自动带入' });
     });
     return out;
   }
@@ -786,6 +786,271 @@
   }
 
   // ---------------------------------------------------------------------
+  // 经费汇入（v1.7）：走访慰问 / 员工活动 的支出 → 经费收支
+  // ---------------------------------------------------------------------
+
+  const FUND_SHEET_KEY = '04-经费收支';
+  const FUND_COL = {
+    union: '工会名称',
+    initial: '期初金额',
+    income: '入账金额',
+    expense: '支出金额',           // 手工登记的其它支出（银行流水等）
+    visitIn: '慰问支出汇入（元）',   // 系统按账户汇入
+    actIn: '活动支出汇入（元）',     // 系统按账户汇入
+    total: '支出合计（元）',         // = 支出金额 + 两条汇入
+    balanceYuan: '当前结余（元）',   // = 期初 + 入账 − 支出合计
+    balanceWan: '当前结余（万元）',  // = 当前结余（元） ÷ 10000
+  };
+
+  /** 04 表里由系统算出来的列（后台只读，不允许手工编辑） */
+  const FUND_DERIVED_COLS = [FUND_COL.visitIn, FUND_COL.actIn, FUND_COL.total, FUND_COL.balanceYuan, FUND_COL.balanceWan];
+
+  /**
+   * 汇入来源：哪张表的「费用列支账户」对应 04 的「工会名称」，取哪一列金额。
+   * amount 列里的值一律按「元」处理（列名带「万元」时自动 ×10000）。
+   */
+  const FUND_ROLLUP_SOURCES = [
+    { sheet: '02-走访慰问', account: '费用列支账户', amount: '慰问物品金额（元）', target: FUND_COL.visitIn, label: '走访慰问' },
+    { sheet: '03-员工活动', account: '费用列支账户', amount: '支出金额（元）', target: FUND_COL.actIn, label: '员工活动' },
+  ];
+
+  const normText = v => String(v == null ? '' : v).trim();
+  /** 这个格子算不算「填了东西」（区分 0 和空） */
+  const filled = v => v !== null && v !== undefined && String(v).trim() !== '';
+  /** 金额统一保留 2 位小数（0.01 元） */
+  const round2 = v => Math.round((Number(v) || 0) * 100) / 100;
+
+  /** 取某行某字段的数值（元）；列名带万元自动 ×10000 */
+  function amountInYuan(row, headers, field) {
+    const n = toNum(pick(row, headers, field));
+    if (n === null) return 0;
+    return /万元/.test(String(field)) ? n * 10000 : n;
+  }
+
+  /** 去掉列名末尾的单位括号：「慰问物品金额（元）」→「慰问物品金额」 */
+  const baseName = h => String(h == null ? '' : h).replace(/（[^）]*）\s*$/, '').trim();
+
+  /**
+   * 在表头里找一个列。
+   *
+   * 线上真实数据的列名和种子不完全一致（单位一会儿「元」一会儿「万元」，
+   * 账户列也可能多几个字），写死列名一碰就静默变成 0 —— 这种错最难查。
+   * 所以按 精确 → 去单位后缀 → 互相包含 三级兜底。
+   */
+  function resolveField(headers, wanted) {
+    if (!Array.isArray(headers) || !wanted) return null;
+    if (headers.indexOf(wanted) >= 0) return wanted;
+    const wb = baseName(wanted);
+    if (wb) {
+      const exact = headers.find(h => baseName(h) === wb);
+      if (exact) return exact;
+      const loose = headers.filter(h => {
+        const hb = baseName(h);
+        return hb && (hb.indexOf(wb) >= 0 || wb.indexOf(hb) >= 0);
+      });
+      if (loose.length) return loose[0];
+    }
+    return null;
+  }
+
+  /**
+   * 按「费用列支账户 = 工会名称」把业务表的支出汇入经费收支表，并重算结余。
+   * 纯函数：返回新对象，不改入参。
+   *
+   *   慰问支出汇入（元） = Σ 02.慰问物品金额 WHERE 02.费用列支账户 = 本行工会名称
+   *   活动支出汇入（元） = Σ 03.支出金额     WHERE 03.费用列支账户 = 本行工会名称
+   *   支出合计（元）     = 支出金额（手工其它支出）+ 两条汇入
+   *   当前结余（元）     = 期初金额 + 入账金额 − 支出合计（元）
+   *   当前结余（万元）   = 当前结余（元） ÷ 10000
+   *
+   * 「当前结余（元）/（万元）」是**派生值**（等于 期初 + 入账 − 支出合计），后台只读。
+   * ⚠️ 若表里原本手填的结余与公式结果对不上（历史脏数据），这里会以公式为准覆盖它，
+   *    并在日志里记一条 warning —— 覆盖前有自动快照，可在「安全设置 → 备份」里找回。
+   *    想手工调整某个工会的结余，改它的「期初金额」即可。
+   */
+  function rollupFundExpense(data, warnings) {
+    if (!data || typeof data !== 'object') return data;
+    const fund = data[FUND_SHEET_KEY];
+    if (!fund || !Array.isArray(fund.headers) || !Array.isArray(fund.rows)) return data;
+
+    const H = fund.headers;
+    const iUnion = H.indexOf(FUND_COL.union);
+    const iInitial = H.indexOf(FUND_COL.initial);
+    const iIncome = H.indexOf(FUND_COL.income);
+    const iExpense = H.indexOf(FUND_COL.expense);
+    const iBalYuan = H.indexOf(FUND_COL.balanceYuan);
+    const iBalWan = H.indexOf(FUND_COL.balanceWan);
+    if (iUnion < 0) return data;
+
+    // 每张来源表：账户名 → 金额合计（元）
+    const maps = new Map();
+    FUND_ROLLUP_SOURCES.forEach(s => {
+      const src = data[s.sheet];
+      const map = new Map();
+      if (src && Array.isArray(src.headers) && Array.isArray(src.rows)) {
+        const SH = src.headers;
+        const accField = resolveField(SH, s.account);
+        const amtField = resolveField(SH, s.amount);
+        if (accField && amtField) {
+          src.rows.forEach(r => {
+            const acc = normText(pick(r, SH, accField));
+          if (!acc) return;
+            const v = amountInYuan(r, SH, amtField);
+            map.set(acc, (map.get(acc) || 0) + Math.abs(v));
+          });
+        }
+      }
+      maps.set(s.target, map);
+    });
+
+    const out = clone(data);
+    const warn = warnings || [];
+
+    out[FUND_SHEET_KEY].rows = fund.rows.map((r, idx) => {
+      const getName = () => normText(pick(r, H, FUND_COL.union));
+      const name = getName();
+      const visitIn = round2((maps.get(FUND_COL.visitIn) || new Map()).get(name) || 0);
+      const actIn = round2((maps.get(FUND_COL.actIn) || new Map()).get(name) || 0);
+      const manualExpense = Math.abs(toNum(pick(r, H, FUND_COL.expense)) || 0);
+      const total = round2(manualExpense + visitIn + actIn);
+
+      let initial = toNum(pick(r, H, FUND_COL.initial)) || 0;
+      const income = toNum(pick(r, H, FUND_COL.income)) || 0;
+
+      const setCell = (fname, val) => {
+        if (Array.isArray(r)) {
+          const i = H.indexOf(fname);
+          if (i >= 0) r[i] = val; else return;
+        } else if (r && typeof r === 'object') {
+          r[fname] = val;
+        }
+      };
+
+      setCell(FUND_COL.visitIn, visitIn);
+      setCell(FUND_COL.actIn, actIn);
+      setCell(FUND_COL.total, total);
+
+      const old = toNum(pick(r, H, FUND_COL.balanceYuan));
+
+      // 历史数据里「期初金额 / 入账金额」可能整行为空，而「当前结余（元）」是手工登记的。
+      // 这种情况不能直接套公式——会把用户手填的结余算成 0（等于抹掉数据）。
+      // 这里做一次「校准」：用结余反推期初金额，让等式重新成立。
+      // 只跑一次（期初被填上后下次就走正常公式了），且写前有自动快照，可在备份里找回。
+      const hasLedger = filled(pick(r, H, FUND_COL.initial)) || filled(pick(r, H, FUND_COL.income));
+      if (!hasLedger && old !== null) {
+        initial = round2(old + total);
+        setCell(FUND_COL.initial, initial);
+        warn.push(`经费收支「${name || '（空）'}」未登记期初/入账金额，已按当前结余 ${old} 元反推期初金额 ${initial} 元（可在备份中找回旧值）`);
+      }
+
+      const computed = round2(initial + income - total);
+      if (old !== null && Math.abs(old - computed) > 0.011) {
+        warn.push(`经费收支「${name || '（空）'}」原有结余 ${old} 元与公式结果 ${computed} 元不一致，已按公式更新（可在备份中找回旧值）`);
+      }
+      setCell(FUND_COL.balanceYuan, computed);
+      setCell(FUND_COL.balanceWan, round2(computed / 10000));
+      return r;
+    });
+
+    return out;
+  }
+
+  /**
+   * 统计「有金额但对不上任何经费账户」的业务支出。
+   * 用于后台提示：这些钱不会被汇入经费收支，需要补填正确的账户名。
+   * 返回 [{ sheet, label, account, amount, count }]
+   */
+  function findUnmatchedExpense(data) {
+    const out = [];
+    if (!data || typeof data !== 'object') return out;
+    const fund = data[FUND_SHEET_KEY];
+    const FH = (fund && fund.headers) || [];
+    const iUnion = FH.indexOf(FUND_COL.union);
+    const known = new Set(
+      iUnion >= 0
+        ? (fund.rows || []).map(r => normText(pick(r, FH, FUND_COL.union))).filter(Boolean)
+        : []
+    );
+
+    FUND_ROLLUP_SOURCES.forEach(s => {
+      const src = data[s.sheet];
+      if (!src || !Array.isArray(src.headers) || !Array.isArray(src.rows)) return;
+      const SH = src.headers;
+      const accField = resolveField(SH, s.account);
+      const amtField = resolveField(SH, s.amount);
+      if (!accField || !amtField) return;
+      const buckets = new Map();
+      src.rows.forEach(r => {
+        const v = Math.abs(amountInYuan(r, SH, amtField));
+        if (!v) return;
+        const acc = normText(pick(r, SH, accField));
+        if (acc && known.has(acc)) return;        // 能对上 → 正常汇入
+        const key = acc || '（未填账户）';
+        const b = buckets.get(key) || { sheet: s.sheet, label: s.label, account: key, amount: 0, count: 0 };
+        b.amount = round2(b.amount + v);
+        b.count += 1;
+        buckets.set(key, b);
+      });
+      buckets.forEach(b => out.push(b));
+    });
+
+    return out;
+  }
+
+  /** 往 sheet 里补一列（数组行 splice / 对象行补 key，两种形态都处理） */
+  function addMissingColumn(sheet, name, def, afterField) {
+    if (!sheet || !Array.isArray(sheet.headers)) return false;
+    if (sheet.headers.indexOf(name) >= 0) return false;
+    const H = sheet.headers;
+    let at = H.length;
+    if (afterField) {
+      const p = H.indexOf(afterField);
+      if (p >= 0) at = p + 1;
+    }
+    if (at <= 0) at = 1;                    // 「序号」永远在第一位
+    H.splice(at, 0, name);
+    sheet.schema = Object.assign({}, sheet.schema || {}, { [name]: def || { type: 'number', decimals: 2 } });
+    (sheet.rows || []).forEach(r => {
+      if (Array.isArray(r)) {
+        while (r.length < at) r.push('');
+        r.splice(at, 0, '');
+      } else if (r && typeof r === 'object' && r[name] === undefined) {
+        r[name] = '';
+      }
+    });
+    return true;
+  }
+
+  /**
+   * 确保 04 表有汇入相关的列（幂等；只补不删）。
+   * 放在这里而不是 server.js，是为了让离线模式（localStorage）也有同样的列。
+   */
+  function ensureFundColumns(data) {
+    if (!data || typeof data !== 'object') return data;
+    const fund = data[FUND_SHEET_KEY];
+    if (!fund || !Array.isArray(fund.headers)) return data;
+    const derived = { type: 'number', decimals: 2, derived: true, readonly: true };
+    addMissingColumn(fund, FUND_COL.visitIn, derived, FUND_COL.expense);
+    addMissingColumn(fund, FUND_COL.actIn, derived, FUND_COL.visitIn);
+    addMissingColumn(fund, FUND_COL.total, derived, FUND_COL.actIn);
+    return data;
+  }
+
+  /** 列名常量：端口提报人（后台只读） */
+  const REPORTER_FIELD = '提报人';
+
+  /** 确保三张业务表都有「提报人」列（幂等；端口写入前调用） */
+  function ensureReporterColumns(data) {
+    if (!data || typeof data !== 'object') return data;
+    ['01-组织建设', '02-走访慰问', '03-员工活动'].forEach(key => {
+      const sh = data[key];
+      if (!sh || !Array.isArray(sh.headers)) return;
+      addMissingColumn(sh, REPORTER_FIELD, { type: 'text', readonly: true }, null);
+    });
+    return data;
+  }
+
+  // ---------------------------------------------------------------------
   // 数字格式化
   // ---------------------------------------------------------------------
   function fmtNum(v, decimals) {
@@ -812,5 +1077,9 @@
     resolveValueField, migrateWaterfallUnit,
     // 配置升级（把模板新增项补进已有配置）
     mergeAdditions,
+    // 经费汇入（v1.7）
+    FUND_SHEET_KEY, FUND_COL, FUND_DERIVED_COLS, FUND_ROLLUP_SOURCES,
+    rollupFundExpense, findUnmatchedExpense, addMissingColumn, ensureFundColumns,
+    REPORTER_FIELD, ensureReporterColumns,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

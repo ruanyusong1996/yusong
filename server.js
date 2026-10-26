@@ -46,10 +46,15 @@ const crypto = require('crypto');
 require(path.join(__dirname, 'config-engine.js'));
 const CE = globalThis.ConfigEngine || {};
 
+// 字段定义（required / number / select …）：与前端 data-store.js 共用同一份，
+// 服务端拿它来校验「收集端口」提报的数据。只读，不写回数据文件。
+require(path.join(__dirname, 'schema.js'));
+const BUILTIN_SCHEMA = globalThis.BUILTIN_SCHEMA || {};
+
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -412,16 +417,36 @@ async function migrateDataColumns() {
   console.log(`[migrate] 已为现有数据补齐 ${added.length} 个新列：${added.join('、')}`);
 }
 
+/**
+ * 经费汇入：把 02/03 的支出按「费用列支账户 = 工会名称」汇进 04，并重算结余。
+ * 每次读数据都算一遍 —— 这样看板与后台看到的永远是最新值，
+ * 也不必担心汇入列被写脏（下一读就会重算回来）。
+ */
+function applyFundRollup(data) {
+  if (!data || typeof data !== 'object') return data;
+  if (typeof CE.ensureFundColumns !== 'function' || typeof CE.rollupFundExpense !== 'function') return data;
+  try {
+    CE.ensureFundColumns(data);
+    const warns = [];
+    const out = CE.rollupFundExpense(data, warns);
+    if (warns.length) console.warn('[rollup] ' + warns.join(' | '));
+    return out;
+  } catch (e) {
+    console.error('[rollup] 经费汇入计算失败：', e && (e.message || e));
+    return data;
+  }
+}
+
 function readData() {
   const d = readJsonSafe(DATA_FILE);
-  if (d) return ensureSheets(d);
+  if (d) return applyFundRollup(ensureSheets(d));
   // 主文件读不出来（被截断/写坏）→ 用最近一份备份顶上，避免"数据全空"
   const latest = listBackups().find(f => backupKindOf(f.name) === 'data');
   if (latest) {
     const b = readJsonSafe(path.join(BACKUP_DIR, latest.name));
     if (b) {
       console.error(`[readData] 主数据文件不可读，已临时启用备份 ${latest.name}`);
-      return ensureSheets(b);
+      return applyFundRollup(ensureSheets(b));
     }
   }
   console.error('[readData] 数据文件读取失败');
@@ -459,6 +484,26 @@ async function upgradeConfigFromSeed() {
     if (pulled || hid) {
       added.push(`移除「覆盖总人次」卡片（${pulled} 处引用${hid ? '，指标已置为不显示（可在后台指标里彻底删除）' : ''}）`);
     }
+  }
+
+  // v5 一次性修正：经费指标口径切到「期初金额 / 支出合计（元）」。
+  // 只改还停留在老字段名的指标 —— 用户自己改过的列名一律不动。
+  // 注意：两个「汇入」指标由 mergeAdditions 带来的新块 b-fund-inflow 承载，
+  // 这里**不要**再往老块里塞一遍，否则同一张卡片会被渲染两次。
+  if (appliedV < 5) {
+    const LEGACY = { 'fund-initial': '年初金额', 'fund-spend': '支出金额' };
+    const NEXT = { 'fund-initial': '期初金额', 'fund-spend': '支出合计（元）' };
+    let fixed = 0;
+    (cfg.metrics || []).forEach(m => {
+      const want = NEXT[m.id];
+      if (!want) return;
+      const cur = m.field;
+      if (cur === undefined || cur === null || cur === '' || cur === LEGACY[m.id]) {
+        m.field = want;
+        fixed += 1;
+      }
+    });
+    if (fixed) added.push(`经费指标口径已更新为「期初金额 / 支出合计（元）」(${fixed} 项)`);
   }
 
   cfg.seedVersion = seedV;
@@ -612,6 +657,121 @@ function setPassword(role, password) {
   fs.writeFileSync(AUTH_FILE, JSON.stringify(AUTH, null, 2), 'utf-8');
 }
 
+// ---------------------------------------------------------------------------
+// 收集端口：10 个相互独立的填报账号，各自只能看/改自己提报的数据
+// ---------------------------------------------------------------------------
+
+const PORTS_FILE = path.join(DATA_DIR, 'server-ports.json');
+const PORT_COUNT = 10;
+/** 端口首次创建时的统一初始密码（后台会显著提示管理员尽快修改） */
+const DEFAULT_PORT_PASSWORD = process.env.DEFAULT_PORT_PASSWORD || 'gh123456';
+/** 端口可以填报的数据表 */
+const PORT_SHEETS = ['01-组织建设', '02-走访慰问', '03-员工活动'];
+/** 端口提报时由系统写入、后台只读的列 */
+const REPORTER_FIELD = '提报人';
+
+function nowIso() { return new Date().toISOString(); }
+
+/** 同步写（端口配置小、写入低频；写前照样留快照） */
+function writeJsonSync(file, obj, tag) {
+  ensureDir();
+  try { if (fs.existsSync(file)) backupFile(file, tag); } catch (_) {}
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8');
+  fs.renameSync(tmp, file);
+}
+
+function createPortsFile() {
+  const ports = [];
+  for (let i = 1; i <= PORT_COUNT; i++) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    ports.push({
+      id: 'p' + i,
+      index: i,
+      name: `收集端口 ${i}`,
+      username: `port${i}`,
+      salt,
+      hash: hashPassword(DEFAULT_PORT_PASSWORD, salt),
+      enabled: true,
+      createdAt: nowIso(),
+      updatedAt: null,
+      lastLoginAt: null,
+      sheets: PORT_SHEETS.slice(),   // 每张表默认都可填，后台可逐端口关掉
+    });
+  }
+  const obj = { version: 1, ports };
+  writeJsonSync(PORTS_FILE, obj, 'init');
+  return obj;
+}
+
+let PORTS = null;
+function loadPorts() {
+  ensureDir();
+  PORTS = readJsonSafe(PORTS_FILE);
+  if (!PORTS || typeof PORTS !== 'object' || !Array.isArray(PORTS.ports) || !PORTS.ports.length) {
+    PORTS = createPortsFile();
+  }
+  // 补齐老配置文件里缺的字段（只增不删、幂等）
+  let changed = false;
+  PORTS.ports.forEach((p, i) => {
+    if (!p.id) { p.id = 'p' + (i + 1); changed = true; }
+    if (typeof p.index !== 'number') { p.index = i + 1; changed = true; }
+    if (!p.name) { p.name = `收集端口 ${i + 1}`; changed = true; }
+    if (!p.username) { p.username = `port${i + 1}`; changed = true; }
+    if (typeof p.enabled !== 'boolean') { p.enabled = true; changed = true; }
+    if (!Array.isArray(p.sheets)) { p.sheets = PORT_SHEETS.slice(); changed = true; }
+  });
+  while (PORTS.ports.length < PORT_COUNT) {
+    const i = PORTS.ports.length + 1;
+    const salt = crypto.randomBytes(16).toString('hex');
+    PORTS.ports.push({
+      id: 'p' + i, index: i, name: `收集端口 ${i}`, username: `port${i}`,
+      salt, hash: hashPassword(DEFAULT_PORT_PASSWORD, salt),
+      enabled: true, createdAt: nowIso(), updatedAt: null, lastLoginAt: null,
+      sheets: PORT_SHEETS.slice(),
+    });
+    changed = true;
+  }
+  if (changed) writeJsonSync(PORTS_FILE, PORTS, 'upgrade');
+  return PORTS;
+}
+
+function findPortByUsername(username) {
+  const key = String(username == null ? '' : username).trim().toLowerCase();
+  if (!key) return null;
+  return (PORTS.ports || []).find(p => String(p.username == null ? '' : p.username).trim().toLowerCase() === key) || null;
+}
+
+function verifyPortPassword(p, password) {
+  if (!p || password === undefined || password === null) return false;
+  const got = hashPassword(password, p.salt);
+  const a = Buffer.from(got, 'hex');
+  const b = Buffer.from(p.hash || '', 'hex');
+  return a.length === b.length && b.length > 0 && crypto.timingSafeEqual(a, b);
+}
+
+function setPortPassword(p, password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  p.salt = salt;
+  p.hash = hashPassword(password, salt);
+  p.updatedAt = nowIso();
+  writeJsonSync(PORTS_FILE, PORTS, 'port-password');
+}
+
+/** 端口信息脱敏（不把 salt/hash 发到前端） */
+function publicPort(p) {
+  return {
+    id: p.id,
+    index: p.index,
+    name: p.name,
+    username: p.username,
+    enabled: !!p.enabled,
+    updatedAt: p.updatedAt || null,
+    lastLoginAt: p.lastLoginAt || null,
+    sheets: Array.isArray(p.sheets) ? p.sheets.slice() : PORT_SHEETS.slice(),
+  };
+}
+
 /** token -> { role, expires } */
 const sessions = new Map();
 
@@ -641,6 +801,16 @@ function getSession(req) {
 
 const isViewer = s => !!s && (s.role === 'dashboard' || s.role === 'admin');
 const isAdmin = s => !!s && s.role === 'admin';
+const isPort = s => !!s && s.role === 'port';
+
+/** 当前请求对应的收集端口（未登录/非端口返回 null） */
+function portOf(req) {
+  const s = getSession(req);
+  if (!isPort(s)) return null;
+  return (PORTS && Array.isArray(PORTS.ports))
+    ? (PORTS.ports.find(p => p.id === s.portId) || null)
+    : null;
+}
 
 function setSessionCookie(res, token, maxAgeMs) {
   const parts = [
@@ -664,6 +834,10 @@ function requireView(req, res, next) {
 function requireAdmin(req, res, next) {
   if (isAdmin(getSession(req))) return next();
   res.status(401).json({ error: '需要后台登录', needLogin: true });
+}
+function requirePort(req, res, next) {
+  if (portOf(req)) return next();
+  res.status(401).json({ error: '需要收集端口登录', needLogin: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +922,410 @@ app.post('/api/auth/password', (req, res) => {
   [...sessions.keys()].forEach(t => { if (t !== keep) sessions.delete(t); });
   console.log(`[auth] 密码已更新: ${role}`);
   res.json({ ok: true, message: role === 'admin' ? '后台密码已更新' : '看板密码已更新' });
+});
+
+// --------------------------- 收集端口接口 ----------------------------------
+// 端口是独立于看板/后台密码的一套账号：用户名唯一、各自独立，
+// 登录后只能看到并修改自己提报的记录（写入时自动打上「提报人」）。
+
+/** 行是否属于某个端口 */
+function rowBelongsTo(row, headers, port) {
+  const who = String(DashboardStorePick(row, headers, REPORTER_FIELD) || '').trim();
+  if (!who) return false;
+  return who === String(port.name || '').trim()
+    || who === String(port.username || '').trim()
+    || who === String(port.id || '').trim();
+}
+/** 兼容对象行 / 数组行取值（与前端 pickValue 同逻辑） */
+function DashboardStorePick(row, headers, fieldName) {
+  if (row == null || !fieldName) return '';
+  if (typeof row === 'object' && !Array.isArray(row)) {
+    return row[fieldName] !== undefined && row[fieldName] !== null ? row[fieldName] : '';
+  }
+  const i = (headers || []).indexOf(fieldName);
+  return i >= 0 && i < row.length && row[i] != null ? row[i] : '';
+}
+
+/** 端口可选填的表（配置里没写就按默认三张） */
+function sheetsOfPort(p) {
+  const list = Array.isArray(p.sheets) && p.sheets.length ? p.sheets : PORT_SHEETS.slice();
+  return list.filter(s => PORT_SHEETS.indexOf(s) >= 0);
+}
+
+/**
+ * 取一张表最终生效的字段定义。
+ *
+ * 服务端存在的数据文件里可能根本没有 schema（前端是在内存里 normalize 的），
+ * 直接拿 `sh.schema || {}` 去校验会让 required / number / select 全部失效——
+ * 端口就能把必填项留空写进来。所以这里统一用共享的 BUILTIN_SCHEMA 兜底。
+ *
+ * 优先级：用户自己改过的定义（键数 > 1）> 内置定义 > 纯文本兜底。
+ */
+function mergedSchema(key, sh) {
+  const builtin = BUILTIN_SCHEMA[key] || {};
+  const stored = (sh && sh.schema) || {};
+  const out = {};
+  ((sh && sh.headers) || []).forEach(h => {
+    const b = builtin[h];
+    const s = stored[h];
+    if (s && Object.keys(s).length > 1) out[h] = Object.assign({}, s);
+    else if (b) out[h] = Object.assign({}, b);
+    else out[h] = Object.assign({}, s || { type: 'text' });
+  });
+  return out;
+}
+
+/** 按 schema 校验一行数据；返回 { ok, errors } */
+function validateRow(headers, schema, row) {
+  const errors = [];
+  headers.forEach(h => {
+    const def = schema[h] || {};
+    if (def.auto || def.derived || def.readonly) return;  // 系统列不参与校验
+    const raw = row[h];
+    const s = raw === null || raw === undefined ? '' : String(raw).trim();
+    if (def.required && s === '') { errors.push(`「${h}」不能为空`); return; }
+    if (def.type === 'number' && s !== '') {
+      const n = Number(s.replace(/,/g, ''));
+      if (!Number.isFinite(n)) { errors.push(`「${h}」不是数字`); return; }
+      if (typeof def.min === 'number' && n < def.min) errors.push(`「${h}」不能小于 ${def.min}`);
+      const dec = (typeof def.decimals === 'number' && def.decimals >= 0) ? def.decimals : 2;
+      const parts = String(s).split('.');
+      if (parts[1] && parts[1].length > dec) errors.push(`「${h}」最多 ${dec} 位小数`);
+    }
+    if (def.type === 'select' && s !== '' && Array.isArray(def.options) && def.options.length
+        && def.options.indexOf(s) < 0) {
+      errors.push(`「${h}」只能取：${def.options.join(' / ')}`);
+    }
+  });
+  return { ok: !errors.length, errors };
+}
+
+app.post('/api/port/login', (req, res) => {
+  const { username, password } = req.body || {};
+  const p = findPortByUsername(username);
+  if (!p || !p.enabled || !verifyPortPassword(p, password)) {
+    return res.status(401).json({ error: '用户名或密码错误' });
+  }
+  p.lastLoginAt = nowIso();
+  try { writeJsonSync(PORTS_FILE, PORTS, 'port-login'); } catch (e) { console.error('[port] 登录时间写入失败:', e.message); }
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, { role: 'port', portId: p.id, expires: Date.now() + SESSION_TTL_MS, since: Date.now() });
+  setSessionCookie(res, token, SESSION_TTL_MS);
+  res.json({ ok: true, role: 'port', portId: p.id, name: p.name, username: p.username, mustChange: false });
+});
+
+app.post('/api/port/logout', requirePort, (req, res) => {
+  const token = getToken(req);
+  if (token) sessions.delete(token);
+  res.append('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  res.json({ ok: true });
+});
+
+app.get('/api/port/me', (req, res) => {
+  const p = portOf(req);
+  if (!p) return res.status(401).json({ error: '需要收集端口登录', needLogin: true });
+  res.json({ ok: true, portId: p.id, name: p.name, username: p.username, sheets: sheetsOfPort(p) });
+});
+
+/** 端口自己改用户名 / 密码（用户名不能和别的端口撞） */
+app.post('/api/port/credentials', requirePort, (req, res) => {
+  const p = portOf(req);
+  const { username, password } = req.body || {};
+  const nextUser = String(username == null ? '' : username).trim();
+  const nextPass = String(password == null ? '' : password);
+  if (!nextUser && !nextPass) return res.status(400).json({ error: '用户名与密码都没有填写' });
+  if (nextUser) {
+    const clash = (PORTS.ports || []).find(x => x.id !== p.id
+      && String(x.username == null ? '' : x.username).trim().toLowerCase() === nextUser.toLowerCase());
+    if (clash) return res.status(400).json({ error: `用户名「${nextUser}」已被其它端口占用` });
+    p.username = nextUser;
+  }
+  if (nextPass) {
+    if (nextPass.length < 4) return res.status(400).json({ error: '密码至少 4 位' });
+    if (nextPass.length > 64) return res.status(400).json({ error: '密码过长（≤64 位）' });
+    p.salt = crypto.randomBytes(16).toString('hex');
+    p.hash = hashPassword(nextPass, p.salt);
+  }
+  p.updatedAt = nowIso();
+  writeJsonSync(PORTS_FILE, PORTS, 'port-credentials');
+  res.json({ ok: true, username: p.username });
+});
+
+/** 可填报的表 + 表结构（用于渲染填报表单） */
+app.get('/api/port/sheets', requirePort, (req, res) => {
+  const p = portOf(req);
+  const data = readData();
+  const list = sheetsOfPort(p).map(key => {
+    const sh = data[key];
+    if (!sh) return null;
+    const headers = (sh.headers || []).slice();
+    const schema = mergedSchema(key, sh);
+    return {
+      key, title: sh.title || key, headers, schema,
+      // 经费账户下拉选项：经费收支表里的工会名称
+      // 注意：FUND_COL 是 config-engine 内部常量，服务端取不到，这里用字面量
+      accounts: (data['04-经费收支'] && (data['04-经费收支'].rows || []))
+        .map(r => String(DashboardStorePick(r, data['04-经费收支'].headers, '工会名称') || '').trim())
+        .filter(Boolean),
+    };
+  }).filter(Boolean);
+  res.json({ ok: true, sheets: list });
+});
+
+/** 我提报的记录（带真实行号，便于编辑/删除） */
+app.get('/api/port/records', requirePort, (req, res) => {
+  const p = portOf(req);
+  const only = String(req.query.sheet || '').trim();
+  const data = readData();
+  const keys = sheetsOfPort(p).filter(k => !only || k === only);
+  const out = [];
+  keys.forEach(key => {
+    const sh = data[key];
+    if (!sh) return;
+    const H = sh.headers || [];
+    (sh.rows || []).forEach((r, i) => {
+      if (!rowBelongsTo(r, H, p)) return;
+      const obj = {};
+      H.forEach(h => { obj[h] = DashboardStorePick(r, H, h); });
+      out.push({ sheet: key, index: i, row: obj });
+    });
+  });
+  res.json({ ok: true, records: out });
+});
+
+/** 新增一条提报 */
+app.post('/api/port/submit', requirePort, async (req, res) => {
+  const p = portOf(req);
+  const { sheet, row } = req.body || {};
+  if (!sheet || sheetsOfPort(p).indexOf(sheet) < 0) {
+    return res.status(400).json({ error: '该端口未被授权填报此表' });
+  }
+  const data = readData();
+  const sh = data && data[sheet];
+  if (!sh || !Array.isArray(sh.headers)) return res.status(400).json({ error: '数据表不存在: ' + sheet });
+  CE.ensureReporterColumns(data);          // 兜底：确保「提报人」列存在
+  const H = sh.headers;
+  const schema = mergedSchema(sheet, sh);
+
+  const next = {};
+  H.forEach(h => { const d = schema[h] || {}; if (!d.auto) next[h] = ''; });
+  Object.keys(row || {}).forEach(k => {
+    if (!(k in next)) return;                    // 忽略 schema 里没有的列
+    const d = schema[k] || {};
+    if (d.auto || d.derived || d.readonly) return;  // 系统列不允许端口改
+    next[k] = row[k];
+  });
+  next[REPORTER_FIELD] = p.name;
+
+  const v = validateRow(H, schema, next);
+  if (!v.ok) return res.status(400).json({ error: '数据校验未通过', details: v.errors });
+
+  sh.rows = renumberRows((sh.rows || []).concat([next]));
+  try {
+    await writeJsonAtomic(DATA_FILE, applyFundRollup(data), 'port-submit');
+    broadcast('update', { ts: new Date().toISOString(), editorId: `port:${p.id}` });
+    res.json({ ok: true, index: sh.rows.length - 1 });
+  } catch (e) {
+    console.error('[port] 提报写入失败:', e);
+    res.status(500).json({ error: '提报失败', detail: e.message });
+  }
+});
+
+/** 修改自己提报的一条记录 */
+app.post('/api/port/update', requirePort, async (req, res) => {
+  const p = portOf(req);
+  const { sheet, index, row } = req.body || {};
+  if (!sheet || sheetsOfPort(p).indexOf(sheet) < 0) {
+    return res.status(400).json({ error: '该端口未被授权填报此表' });
+  }
+  const i = parseInt(index, 10);
+  const data = readData();
+  const sh = data && data[sheet];
+  if (!sh || !Array.isArray(sh.rows) || !Number.isFinite(i) || i < 0 || i >= sh.rows.length) {
+    return res.status(400).json({ error: '记录不存在' });
+  }
+  const H = sh.headers || [];
+  const schema = mergedSchema(sheet, sh);
+  if (!rowBelongsTo(sh.rows[i], H, p)) {
+    return res.status(403).json({ error: '只能修改自己提报的记录' });
+  }
+  const next = {};
+  H.forEach(h => { if (!(schema[h] && schema[h].auto)) next[h] = ''; });
+  Object.keys(row || {}).forEach(k => {
+    if (!(k in next)) return;
+    const d = schema[k] || {};
+    if (d.auto || d.derived || d.readonly) return;
+    next[k] = row[k];
+  });
+  next[REPORTER_FIELD] = p.name;
+
+  const v = validateRow(H, schema, next);
+  if (!v.ok) return res.status(400).json({ error: '数据校验未通过', details: v.errors });
+
+  sh.rows = renumberRows(sh.rows.map((r, idx) => (idx === i ? next : r)));
+  try {
+    await writeJsonAtomic(DATA_FILE, applyFundRollup(data), 'port-update');
+    broadcast('update', { ts: new Date().toISOString(), editorId: `port:${p.id}` });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[port] 修改失败:', e);
+    res.status(500).json({ error: '修改失败', detail: e.message });
+  }
+});
+
+/** 删除自己提报的一条记录 */
+app.post('/api/port/delete', requirePort, async (req, res) => {
+  const p = portOf(req);
+  const { sheet, index } = req.body || {};
+  if (!sheet || sheetsOfPort(p).indexOf(sheet) < 0) {
+    return res.status(400).json({ error: '该端口未被授权填报此表' });
+  }
+  const i = parseInt(index, 10);
+  const data = readData();
+  const sh = data && data[sheet];
+  if (!sh || !Array.isArray(sh.rows) || !Number.isFinite(i) || i < 0 || i >= sh.rows.length) {
+    return res.status(400).json({ error: '记录不存在' });
+  }
+  if (!rowBelongsTo(sh.rows[i], H_of(sh), p)) {
+    return res.status(403).json({ error: '只能删除自己提报的记录' });
+  }
+  sh.rows = renumberRows(sh.rows.filter((_, idx) => idx !== i));
+  try {
+    await writeJsonAtomic(DATA_FILE, applyFundRollup(data), 'port-delete');
+    broadcast('update', { ts: new Date().toISOString(), editorId: `port:${p.id}` });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[port] 删除失败:', e);
+    res.status(500).json({ error: '删除失败', detail: e.message });
+  }
+});
+
+function H_of(sh) { return (sh && sh.headers) || []; }
+
+/** 重排序号（1..n），兼容对象行与数组行 */
+function renumberRows(rows) {
+  return (rows || []).map((r, i) => {
+    if (Array.isArray(r)) return r;      // 数组行的序号交给前端 normalize 处理
+    return Object.assign({}, r, { 序号: i + 1 });
+  });
+}
+
+/** 后台：端口列表（含各自提报条数，不含密钥） */
+app.get('/api/ports', requireAdmin, (_req, res) => {
+  const data = readData();
+  const counts = {};
+  sheetsToScan().forEach(key => {
+    const sh = data[key];
+    if (!sh) return;
+    const H = sh.headers || [];
+    (sh.rows || []).forEach(r => {
+      const who = String(DashboardStorePick(r, H, REPORTER_FIELD) || '').trim();
+      if (!who) return;
+      counts[who] = (counts[who] || 0) + 1;
+    });
+  });
+  res.json({
+    ok: true,
+    ports: (PORTS.ports || []).map(p => Object.assign(publicPort(p), { count: counts[p.name] || 0 })),
+  });
+});
+
+function sheetsToScan() { return PORT_SHEETS.slice(); }
+
+/** 后台：保存端口配置（username/name/enabled/sheets；password 非空则重置） */
+app.put('/api/ports', requireAdmin, (req, res) => {
+  const list = req.body && Array.isArray(req.body.ports) ? req.body.ports : null;
+  if (!list) return res.status(400).json({ error: '请求体需要 ports 数组' });
+
+  const byId = new Map((PORTS.ports || []).map(p => [p.id, p]));
+  const seen = new Set();
+  const errors = [];
+  const updated = new Map();     // id -> 改动后的新对象
+
+  list.forEach((item) => {
+    const id = String(item.id || '').trim();
+    if (!id) { errors.push('端口缺少 id'); return; }
+    if (seen.has(id)) { errors.push(`端口 id 重复: ${id}`); return; }
+    seen.add(id);
+
+    const old = byId.get(id);
+    // 端口是固定的 10 个，不允许通过后台新增/删除；忽略未知 id，绝不静默丢端口
+    if (!old) { errors.push(`端口不存在: ${id}`); return; }
+
+    const p = Object.assign({}, old);   // 复制一份，保留 salt/hash 等不通过接口下发的字段
+    const name = String(item.name == null ? '' : item.name).trim();
+    const username = String(item.username == null ? '' : item.username).trim();
+    if (name) p.name = name;
+    if (username) p.username = username;
+
+    if (typeof item.enabled === 'boolean') p.enabled = item.enabled;
+    if (Array.isArray(item.sheets)) {
+      p.sheets = item.sheets.filter(s => PORT_SHEETS.indexOf(s) >= 0);
+    }
+    updated.set(id, p);
+  });
+
+  if (errors.length) return res.status(400).json({ error: errors.join('；') });
+
+  // 合并语义：payload 里没出现的端口原样保留（避免一次误操作把 10 个端口删成 1 个）
+  const nextPorts = (PORTS.ports || []).map(p => updated.get(p.id) || p);
+
+  // 用户名在端口之间必须唯一（含未改动的端口）
+  const used = new Set();
+  const clash = [];
+  nextPorts.forEach(p => {
+    const key = String(p.username || '').trim().toLowerCase();
+    if (!key) return;
+    if (used.has(key)) clash.push(p.username);
+    used.add(key);
+  });
+  if (clash.length) return res.status(400).json({ error: '用户名重复：' + clash.join('、') });
+
+  // 密码：非空字符串才重置
+  list.forEach((item) => {
+    const id = String(item.id || '').trim();
+    const p = updated.get(id);
+    if (!p) return;
+    const np = String(item.password == null ? '' : item.password);
+    if (np) {
+      if (np.length < 4) { errors.push(`端口「${p.name}」密码至少 4 位`); return; }
+      if (np.length > 64) { errors.push(`端口「${p.name}」密码过长`); return; }
+      const salt = crypto.randomBytes(16).toString('hex');
+      p.salt = salt;
+      p.hash = hashPassword(np, salt);
+      p.updatedAt = nowIso();
+    }
+  });
+  if (errors.length) return res.status(400).json({ error: errors.join('；') });
+
+  PORTS.ports = nextPorts;
+  writeJsonSync(PORTS_FILE, PORTS, 'ports-save');
+  res.json({ ok: true, ports: PORTS.ports.map(publicPort) });
+});
+
+/** 后台：清空某个端口提报的全部记录（危险操作，前端有二次确认） */
+app.post('/api/ports/clear', requireAdmin, async (req, res) => {
+  const id = String((req.body && req.body.id) || '').trim();
+  const p = (PORTS.ports || []).find(x => x.id === id);
+  if (!p) return res.status(404).json({ error: '端口不存在' });
+  const data = readData();
+  let removed = 0;
+  sheetsToScan().forEach(key => {
+    const sh = data[key];
+    if (!sh || !Array.isArray(sh.rows)) return;
+    const H = sh.headers || [];
+    const keep = sh.rows.filter(r => !rowBelongsTo(r, H, p));
+    removed += sh.rows.length - keep.length;
+    sh.rows = renumberRows(keep);
+  });
+  try {
+    await writeJsonAtomic(DATA_FILE, applyFundRollup(data), 'port-clear');
+    broadcast('update', { ts: new Date().toISOString(), editorId: 'admin' });
+    res.json({ ok: true, removed });
+  } catch (e) {
+    console.error('[ports] 清空失败:', e);
+    res.status(500).json({ error: '清空失败', detail: e.message });
+  }
 });
 
 // --------------------------- 数据接口 --------------------------------------
@@ -882,12 +1460,14 @@ app.put('/api/data', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: `本次写入会把全部 ${prevRows} 行数据清空，已拒绝（如确实要清空，请逐表删除）` });
   }
   try {
-    body._meta = {
-      ...(body._meta || {}),
+    // 落盘前先重算经费汇入：即使客户端送来的汇入列是脏的，存下来的也一定是公式结果
+    const payload = applyFundRollup(body);
+    payload._meta = {
+      ...(payload._meta || {}),
       lastModified: new Date().toISOString(),
       modifiedBy: req.headers['x-editor'] || 'anonymous',
     };
-    await writeJsonAtomic(DATA_FILE, body);
+    await writeJsonAtomic(DATA_FILE, payload);
     if (prevRows > 0 && nextRows < prevRows * 0.5) {
       console.warn(`[PUT /api/data] 行数由 ${prevRows} 骤减到 ${nextRows}，已自动留一份快照可恢复`);
     }
@@ -983,6 +1563,14 @@ const ADMIN_ONLY_FILES = new Set(['/admin.html', '/admin.js']);
  */
 const PUBLIC_STATIC_FILES = new Set([
   '/login.html', '/styles.css', '/admin.css', '/favicon.ico', '/robots.txt',
+  // 收集端口是独立入口，登录页必须匿名可访问；
+  // collect.js 只调 /api/port/* 接口（后台会校验端口会话），本身不含任何数据。
+  '/collect.html', '/collect.js', '/collect.css',
+  // schema.js 是「字段名 → 控件类型」的共享定义（前后端都要用），
+  // 里面没有任何业务数据和密钥。但它必须在看板/后台页面加载前可取到，
+  // 否则 window.BUILTIN_SCHEMA 为空 → 下拉框退化成纯文本框、
+  // 「新增工会组织」弹窗也会因为读不到「经费项目」选项而直接抛异常打不开。
+  '/schema.js',
 ]);
 const PUBLIC_STATIC_PREFIXES = ['/lib/'];
 
@@ -1058,6 +1646,9 @@ const configState = ensureConfigFile();
 ensureManagedFile(AUTH_FILE, null, '密码');
 const authExisted = fs.existsSync(AUTH_FILE);
 loadAuth();
+
+// 收集端口（10 个独立填报账号）
+const portsState = loadPorts();
 
 /** 每天最多打一份「开机检查点」，方便回溯"某天开始数据不对了" */
 (function dailyCheckpoint() {

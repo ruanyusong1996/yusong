@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "text": {
     "documentTitle": "海底捞集团工会工作数据看板",
     "pageTitle": "海底捞集团工会工作数据看板",
@@ -173,13 +173,14 @@
     },
     {
       "id": "fund-initial",
-      "label": "年初金额合计",
+      "label": "期初金额合计",
       "unit": "万元",
       "decimals": 2,
       "visible": true,
       "sheet": "04-经费收支",
       "agg": "sum",
-      "field": "年初金额",
+      "field": "期初金额",
+      "fallbackField": "年初金额",
       "scale": 0.0001,
       "where": [],
       "detail": {
@@ -194,11 +195,42 @@
       "visible": true,
       "sheet": "04-经费收支",
       "agg": "sum",
-      "field": "支出金额",
+      "field": "支出合计（元）",
+      "fallbackField": "支出金额",
       "scale": 0.0001,
       "where": [],
       "detail": {
         "sheet": "04-经费收支"
+      }
+    },
+    {
+      "id": "fund-visit-in",
+      "label": "走访慰问支出汇入",
+      "unit": "万元",
+      "decimals": 2,
+      "visible": true,
+      "sheet": "04-经费收支",
+      "agg": "sum",
+      "field": "慰问支出汇入（元）",
+      "scale": 0.0001,
+      "where": [],
+      "detail": {
+        "sheet": "02-走访慰问"
+      }
+    },
+    {
+      "id": "fund-act-in",
+      "label": "员工活动支出汇入",
+      "unit": "万元",
+      "decimals": 2,
+      "visible": true,
+      "sheet": "04-经费收支",
+      "agg": "sum",
+      "field": "活动支出汇入（元）",
+      "scale": 0.0001,
+      "where": [],
+      "detail": {
+        "sheet": "03-员工活动"
       }
     },
     {
@@ -886,6 +918,16 @@
                 "fund-initial",
                 "fund-spend",
                 "fund-balance"
+              ]
+            },
+            {
+              "id": "b-fund-inflow",
+              "type": "metrics",
+              "visible": true,
+              "title": "业务支出汇入（自动汇总，单位：万元）",
+              "metricIds": [
+                "fund-visit-in",
+                "fund-act-in"
               ]
             }
           ]
