@@ -906,5 +906,5 @@
 /* 文件选择框：视觉上隐藏但仍可点击（display:none 在个别浏览器里点不出对话框） */
 #io-file {
   position: absolute; left: -9999px; top: 0;
-  width: 1px; height: 1px; opacity: 0; pointer-events: none;
+  width: 1px; height: 1px; opacity: 0;
 }
