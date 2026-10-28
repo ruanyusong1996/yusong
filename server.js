@@ -51,10 +51,13 @@ const CE = globalThis.ConfigEngine || {};
 require(path.join(__dirname, 'schema.js'));
 const BUILTIN_SCHEMA = globalThis.BUILTIN_SCHEMA || {};
 
+// Excel 导入导出（服务端专用，内部用 lib/xlsx.full.min.js，不是 npm 依赖）
+const EXCEL = require(path.join(__dirname, 'excel-io.js'));
+
 const ROOT = __dirname;
 const ROOT_REAL = path.resolve(ROOT);
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 // ---------------------------------------------------------------------------
 // 数据目录解析：必须落在「重新部署不会被替换」的地方，数据才不会丢
@@ -1433,6 +1436,254 @@ app.post('/api/backups/restore', requireAdmin, async (req, res) => {
   } catch (e) {
     console.error('[restore]', e);
     res.status(500).json({ error: '恢复失败', detail: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Excel 导入 / 导出
+// ---------------------------------------------------------------------------
+
+/** 表格清单（给后台「导入导出」面板用） */
+function excelSheetList() {
+  const data = readData() || {};
+  return Object.keys(data)
+    .filter(k => k !== '_meta' && data[k] && Array.isArray(data[k].headers))
+    .map(k => ({
+      key: k,
+      rows: (data[k].rows || []).length,
+      cols: data[k].headers.length,
+      headers: data[k].headers,
+    }));
+}
+
+/** 发一个 xlsx 附件；中文文件名走 RFC 5987，否则 Chrome 会存成 %E5%B7%A5… */
+function sendXlsx(res, buf, filename) {
+  res.setHeader('Content-Type', EXCEL.MIME_XLSX);
+  res.setHeader('Content-Disposition',
+    `attachment; filename="export.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader('Content-Length', buf.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(buf);
+}
+
+app.get('/api/excel/sheets', requireAdmin, (_req, res) => {
+  res.json({ sheets: excelSheetList() });
+});
+
+/** 导出全部表（一个文件，每张表一个 sheet） */
+app.get('/api/excel/export-all', requireAdmin, (_req, res) => {
+  const data = readData();
+  if (!data) return res.status(500).json({ error: '数据读取失败' });
+  const list = excelSheetList();
+  if (!list.length) return res.status(400).json({ error: '没有可导出的表' });
+  try {
+    const buf = EXCEL.buildWorkbook(list.map(({ key }) => ({
+      key,
+      headers: data[key].headers,
+      rows: data[key].rows,
+      schema: mergedSchema(key, data[key]),
+    })));
+    sendXlsx(res, buf, EXCEL.filenameOf('工会数据全量', '导出'));
+  } catch (e) {
+    console.error('[excel] 导出全部失败:', e);
+    res.status(500).json({ error: '生成 Excel 失败', detail: e.message });
+  }
+});
+
+/** 导出单表 */
+app.get('/api/excel/export/:key', requireAdmin, (req, res) => {
+  const key = String(req.params.key || '');
+  const data = readData();
+  if (!data || !data[key]) return res.status(404).json({ error: `没有这张表：${key}` });
+  const sh = data[key];
+  try {
+    const buf = EXCEL.buildWorkbook([{
+      key,
+      headers: sh.headers || [],
+      rows: sh.rows || [],
+      schema: mergedSchema(key, sh),
+    }]);
+    sendXlsx(res, buf, EXCEL.filenameOf(key, '导出'));
+  } catch (e) {
+    console.error('[excel] 导出失败:', e);
+    res.status(500).json({ error: '生成 Excel 失败', detail: e.message });
+  }
+});
+
+/** 单表模板（表头 + 填写说明） */
+app.get('/api/excel/template/:key', requireAdmin, (req, res) => {
+  const key = String(req.params.key || '');
+  const data = readData();
+  if (!data || !data[key]) return res.status(404).json({ error: `没有这张表：${key}` });
+  const sh = data[key];
+  try {
+    const buf = EXCEL.buildTemplate({
+      key,
+      headers: sh.headers || [],
+      schema: mergedSchema(key, sh),
+    });
+    sendXlsx(res, buf, EXCEL.filenameOf(key, '导入模板'));
+  } catch (e) {
+    console.error('[excel] 模板生成失败:', e);
+    res.status(500).json({ error: '生成模板失败', detail: e.message });
+  }
+});
+
+// 导入：文件按原始字节收（xlsx 是二进制，不能被 JSON 解析器碰）
+const excelRaw = express.raw({ type: () => true, limit: '12mb' });
+
+/**
+ * 02/03 导入后：把「对不上 04 表工会名称」的费用列支账户挑出来提醒。
+ * 不提醒的话，用户会以为钱已经汇进支出了，实际一分没动。
+ */
+function unmatchedWarnings(data, key) {
+  if (!CE || typeof CE.findUnmatchedExpense !== 'function') return [];
+  if (key !== '02-走访慰问' && key !== '03-员工活动') return [];
+  try {
+    return CE.findUnmatchedExpense(data)
+      .filter(x => x.sheet === key)
+      .slice(0, 8)
+      .map(x => `「${x.account}」有 ${x.count} 笔共 ${x.amount} 元，费用列支账户在经费收支表里找不到同名工会，这部分不会计入支出`);
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * 导入一张表
+ *   ?mode=append|replace   追加（默认）/ 覆盖
+ *   ?dryRun=1              只校验并回显预览，不写库（前端先拿它做「预检」）
+ *   ?confirm=1             覆盖模式必须显式带上
+ */
+app.post('/api/excel/import/:key', requireAdmin, excelRaw, async (req, res) => {
+  const key = String(req.params.key || '');
+  const data = readData();
+  if (!data || !data[key]) return res.status(404).json({ error: `没有这张表：${key}` });
+  const sh = data[key];
+  const headers = (sh.headers || []).slice();
+  const schema = mergedSchema(key, sh);
+  const mode = req.query.mode === 'replace' ? 'replace' : 'append';
+  const dryRun = String(req.query.dryRun || '') === '1';
+
+  const raw = req.body;
+  const buf = Buffer.isBuffer(raw) ? raw
+    : (raw instanceof Uint8Array ? Buffer.from(raw) : null);
+  if (process.env.EXCEL_DBG === '1') {
+    console.log('[excel] 收到导入请求：ct=', req.headers['content-type'],
+      'len=', req.headers['content-length'], 'isBuffer=', Buffer.isBuffer(raw),
+      'ctor=', raw && raw.constructor && raw.constructor.name);
+  }
+  if (!buf || !buf.length) {
+    return res.status(400).json({ error: '没有收到文件内容（请用 .xlsx / .xls / .csv，不要用网页另存的 .htm）' });
+  }
+
+  let parsed;
+  try {
+    parsed = EXCEL.parseSheet(buf, { key, headers, schema });
+  } catch (e) {
+    return res.status(400).json({ error: e.message || '文件解析失败', code: e.code || 'PARSE_ERROR' });
+  }
+
+  const base = {
+    sheet: key,
+    mode,
+    sheetName: parsed.sheetName,
+    dataRows: parsed.dataRows,
+    skippedEmpty: parsed.skippedEmpty,
+    unknownColumns: parsed.unknownColumns,
+    missingColumns: parsed.missingColumns,
+    warnings: parsed.warnings,
+  };
+
+  if (parsed.errors.length) {
+    return res.status(400).json(Object.assign({}, base, {
+      ok: false,
+      error: `有 ${parsed.errors.length} 处不符合要求，已全部拦下（数据没有变动）`,
+      errorCount: parsed.errors.length,
+      errors: parsed.errors.slice(0, 60),
+    }));
+  }
+  if (!parsed.rows.length) {
+    return res.status(400).json(Object.assign({}, base, {
+      ok: false,
+      error: '文件里没有可导入的数据行（只有表头，或者所有行都是空的）',
+    }));
+  }
+
+  // 统一成「键 = 表头」的对象行，顺序也与表头一致
+  const incoming = parsed.rows.map(r => {
+    const o = {};
+    headers.forEach(h => { o[h] = Object.prototype.hasOwnProperty.call(r, h) ? r[h] : ''; });
+    return o;
+  });
+
+  const before = (sh.rows || []).length;
+
+  // 原有行统一转成对象行（历史上数组行/对象行混存），再拼新行；序号统一重排
+  const kept = mode === 'replace' ? [] : (sh.rows || []).map(r => EXCEL.toObjectRow(r, headers));
+  let nextRows = kept.concat(incoming);
+  if (headers.indexOf('序号') >= 0) {
+    nextRows = nextRows.map((r, i) => Object.assign({}, r, { 序号: i + 1 }));
+  }
+  if (!nextRows.length) {
+    return res.status(400).json(Object.assign({}, base, {
+      ok: false,
+      error: '导入后这张表会变成空表，已拒绝（如确实要清空，请在表格里逐行删除）',
+    }));
+  }
+
+  // 预演一遍汇入：把新行放进去、按公式算一次，这样「账户名写错、钱汇不进 04 表」
+  // 在预检阶段就能提示出来，而不是导入完才发现在经费里对不上。
+  let simWarnings = [];
+  try {
+    const sim = JSON.parse(JSON.stringify(data));
+    sim[key].rows = nextRows.map(r => Object.assign({}, r));
+    simWarnings = unmatchedWarnings(applyFundRollup(sim) || sim, key);
+  } catch (_) { /* 预演失败不影响正式流程 */ }
+
+  const result = Object.assign({}, base, {
+    ok: true,
+    incoming: incoming.length,
+    before,
+    after: nextRows.length,
+    warnings: (base.warnings || []).concat(simWarnings),
+  });
+
+  if (dryRun) {
+    return res.json(Object.assign({}, result, {
+      dryRun: true,
+      preview: incoming.slice(0, 5),
+    }));
+  }
+
+  if (mode === 'replace' && String(req.query.confirm || '') !== '1') {
+    return res.status(400).json({ error: '覆盖导入会先清空这张表的原有数据，需要确认后再提交（confirm=1）' });
+  }
+
+  try {
+    const next = Object.assign({}, data, {
+      [key]: Object.assign({}, sh, { rows: nextRows }),
+    });
+    // 02/03 导入后要立刻把支出汇入 04，并重算结余 —— 与正常写数据同一条路径
+    const rolled = applyFundRollup(next) || next;
+    rolled._meta = Object.assign({}, rolled._meta || {}, {
+      lastModified: new Date().toISOString(),
+      modifiedBy: 'excel-import',
+    });
+
+    // writeJsonAtomic 内部会先把旧文件存一份（tag=before-import），这就是后悔药
+    await writeJsonAtomic(DATA_FILE, rolled, 'before-import');
+    broadcast('update', { ts: rolled._meta.lastModified, editorId: 'excel-import' });
+
+    console.log(`[excel] 导入 ${key}：${mode} 模式，+${incoming.length} 行，共 ${nextRows.length} 行`);
+    res.json(Object.assign({}, result, {
+      rows: nextRows.length,
+      added: incoming.length,
+      replaced: mode === 'replace' ? before : 0,
+    }));
+  } catch (e) {
+    console.error('[excel] 导入失败:', e);
+    res.status(500).json({ error: '写入失败（数据没有变动）', detail: e.message });
   }
 });
 

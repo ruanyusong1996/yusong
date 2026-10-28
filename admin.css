@@ -874,3 +874,37 @@
 .cfg-warn-box b { display: block; margin-bottom: 4px; color: #F2B95C; font-size: 13px; }
 .cfg-warn-box ul { margin: 0; padding-left: 18px; }
 .cfg-warn-box li { margin: 2px 0; }
+
+/* ========== Excel 导入 / 导出面板 ========== */
+.io-table-wrap { overflow-x: auto; }
+.io-table td { white-space: nowrap; }
+.io-table .io-num { text-align: right; font-variant-numeric: tabular-nums; color: #5FE0FF; }
+.io-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.io-mode {
+  background: rgba(8, 16, 37, 0.75);
+  border: 1px solid rgba(77, 216, 255, 0.25);
+  color: #E6EEFF; border-radius: 4px; padding: 5px 8px;
+  font-size: 12px; font-family: inherit; outline: none; max-width: 190px;
+}
+.io-summary { font-size: 13px; margin: 8px 0 4px; color: #E6EEFF; }
+.io-summary b { color: #5FE0FF; }
+.io-summary b.io-ok { color: #34D399; }
+.cfg-head.io-ok { color: #34D399; }
+.cfg-head.io-bad { color: #FF6B6B; }
+.io-err-list {
+  margin: 8px 0 0; padding-left: 20px; max-height: 240px; overflow-y: auto;
+  color: #FF8A8A; font-size: 12.5px; line-height: 1.7;
+}
+.io-err-list li { margin: 1px 0; }
+.io-preview { margin-top: 6px; overflow-x: auto; }
+.io-preview .cfg-table { font-size: 12px; }
+/* macOS 的浮层滚动条不滚动时看不见，用户会以为「不能滚」，这里常显 */
+.io-err-list::-webkit-scrollbar, .io-preview::-webkit-scrollbar { width: 8px; height: 8px; }
+.io-err-list::-webkit-scrollbar-thumb, .io-preview::-webkit-scrollbar-thumb {
+  background: rgba(77, 216, 255, 0.35); border-radius: 4px;
+}
+/* 文件选择框：视觉上隐藏但仍可点击（display:none 在个别浏览器里点不出对话框） */
+#io-file {
+  position: absolute; left: -9999px; top: 0;
+  width: 1px; height: 1px; opacity: 0; pointer-events: none;
+}

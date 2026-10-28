@@ -1,6 +1,6 @@
 {
   "name": "gh-dashboard",
-  "version": "1.1.0",
+  "version": "1.8.0",
   "description": "海底捞集团工会工作数据看板（前端 + 后端 + SSE 实时同步）",
   "private": true,
   "main": "server.js",
@@ -8,13 +8,14 @@
     "start": "node server.js",
     "dev": "node server.js",
     "seed": "node build-seed.js",
-    "test": "node test-waterfall.js && node test-v16.js && node test-ports.js && node test-persistence.js all && node run-auth-test-local.js && node run-e2e-local.js",
+    "test": "node test-waterfall.js && node test-v16.js && node test-ports.js && node test-excel.js && node test-persistence.js all && node run-auth-test-local.js && node run-e2e-local.js",
     "test:persist": "node test-persistence.js all",
     "test:api": "node run-auth-test-local.js",
     "test:e2e": "node run-e2e-local.js",
     "test:waterfall": "node test-waterfall.js",
     "test:v16": "V16_PORT=5341 node test-v16.js",
     "test:ports": "node test-ports.js",
+    "test:excel": "node test-excel.js",
     "test:e2e:nonpersist": "E2E_NONPERSIST=1 E2E_DATA_DIR=./.nonpersist-test-data E2E_PORT=5333 node run-e2e-local.js"
   },
   "dependencies": {

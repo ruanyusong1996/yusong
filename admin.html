@@ -69,8 +69,9 @@
     <button class="tab-btn" data-tab="03-员工活动">三、员工活动 <span class="tab-badge" id="badge-03-员工活动">0</span></button>
     <button class="tab-btn" data-tab="04-经费收支">四、经费收支 <span class="tab-badge" id="badge-04-经费收支">0</span></button>
     <button class="tab-btn" data-tab="05-经费瀑布">五、经费瀑布 <span class="tab-badge" id="badge-05-经费瀑布">0</span></button>
-    <button class="tab-btn" data-tab="__config">🎨 看板配置</button>
-    <button class="tab-btn" data-tab="__ports">📥 收集端口</button>
+        <button class="tab-btn" data-tab="__config">🎨 看板配置</button>
+        <button class="tab-btn" data-tab="__io">📤 导入导出</button>
+        <button class="tab-btn" data-tab="__ports">📥 收集端口</button>
     <button class="tab-btn" data-tab="__security">🔒 安全设置</button>
   </nav>
 
@@ -114,6 +115,14 @@
         </div>
       </div>
       <div id="cfg-root"></div>
+    </div>
+
+    <!-- Excel 导入导出面板（由 admin.js 动态渲染） -->
+    <div id="panel-io" class="hidden">
+      <div id="io-root"></div>
+      <!-- 真正的文件选择框「视觉上」藏起来，由面板里的按钮触发。
+           不用 display:none —— 少数浏览器会因此点不出文件对话框。 -->
+      <input type="file" id="io-file" accept=".xlsx,.xls,.csv" />
     </div>
 
     <!-- 收集端口面板（由 admin.js 动态渲染） -->

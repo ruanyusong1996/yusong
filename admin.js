@@ -111,7 +111,7 @@ function confirmDialog(message, title = '确认操作') {
 }
 
 // ============ 数据刷新 ============
-const PSEUDO_TABS = ['__config', '__ports', '__security'];
+const PSEUDO_TABS = ['__config', '__io', '__ports', '__security'];
 
 /** 收集端口后端接口的薄封装（后台管理用，走后台会话 cookie） */
 const PortsAPI = {
@@ -862,13 +862,19 @@ function bindTabs() {
       const cfgPanel = document.getElementById('panel-config');
       const secPanel = document.getElementById('panel-security');
       const portPanel = document.getElementById('panel-ports');
-      const panels = [dataPanel, cfgPanel, secPanel, portPanel];
+      const ioPanel = document.getElementById('panel-io');
+      const panels = [dataPanel, cfgPanel, secPanel, portPanel, ioPanel];
       const show = p => { panels.forEach(x => x && x.classList.add('hidden')); p && p.classList.remove('hidden'); };
 
       if (currentTab === '__config') {
         show(cfgPanel);
         CFG = DashboardStore.getConfig() || CFG;
         renderConfigPanel();
+        return;
+      }
+      if (currentTab === '__io') {
+        show(ioPanel);
+        renderIoPanel();
         return;
       }
       if (currentTab === '__ports') {
@@ -3381,3 +3387,282 @@ async function boot() {
 }
 
 document.addEventListener('DOMContentLoaded', boot);
+
+// ============ Excel 导入 / 导出 ============
+/**
+ * 说明：
+ *   - 导出/模板走 <a download>，浏览器自己带 cookie，不用前端拼 blob；
+ *   - 导入走 fetch + 原始字节（xlsx 是二进制，用 FormData 也行，但服务端只收裸 body 更简单）；
+ *   - 导入一定先 dryRun 预检：服务端把逐行错误全返回，前端确认后才真正写库。
+ *     这样「文件填错了」不会先把数据改坏再说。
+ */
+const IO_STATE = {
+  list: [],
+  target: null,
+  mode: 'append',
+  fileName: '',
+  bytes: null,
+  last: null,
+  bound: false,
+};
+
+async function renderIoPanel() {
+  const root = document.getElementById('io-root');
+  if (!root) return;
+  try {
+    const r = await fetch('/api/excel/sheets', { credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `读取数据表失败（HTTP ${r.status}）`);
+    IO_STATE.list = d.sheets || [];
+    paintIoPanel();
+  } catch (e) {
+    root.innerHTML = `<p class="cfg-hint cfg-warn">${escapeHtml(e.message || String(e))}</p>`;
+  }
+}
+
+function paintIoPanel() {
+  const root = document.getElementById('io-root');
+  if (!root) return;
+  const list = IO_STATE.list || [];
+  const total = list.reduce((s, x) => s + (x.rows || 0), 0);
+
+  root.innerHTML = `
+    <section class="cfg-section">
+      <div class="cfg-head">📤 数据导入 / 导出（Excel）</div>
+      <div class="cfg-body">
+        <p class="cfg-hint">
+          每张表都能<b>单独导出</b>成 Excel、下载<b>空白模板</b>、以及从 Excel <b>批量导入</b>。
+          当前共 ${list.length} 张表、${total} 行数据。
+        </p>
+        <p class="cfg-hint">
+          导入是按<b>列名</b>匹配的 —— 列的顺序可以打乱，也可以少填选填列；
+          但<b>列名不要改</b>（全角/半角括号、空格会自动忽略）。<br/>
+          系统列（「序号」「提报人」和 04 表的 5 个汇入列）不会按文件里的值写库：
+          序号会重新编号，汇入列由系统按公式重算。
+        </p>
+        <div class="cfg-actions">
+          <a class="mini-btn" href="/api/excel/export-all" download>⬇ 导出全部（一个文件，${list.length} 张表）</a>
+          <button class="mini-btn" type="button" id="io-refresh">刷新行数</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="cfg-section">
+      <div class="cfg-head">按表操作</div>
+      <div class="cfg-body">
+        <div class="io-table-wrap">
+          <table class="cfg-table io-table">
+            <thead>
+              <tr>
+                <th style="width:190px">数据表</th>
+                <th style="width:72px">行数</th>
+                <th style="width:64px">列数</th>
+                <th>导出 / 模板 / 导入</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${list.map(s => `
+                <tr>
+                  <td>${escapeHtml(s.key)}</td>
+                  <td class="io-num">${s.rows}</td>
+                  <td class="io-num">${s.cols}</td>
+                  <td class="io-actions">
+                    <a class="mini-btn" href="/api/excel/export/${encodeURIComponent(s.key)}" download>⬇ 导出此表</a>
+                    <a class="mini-btn" href="/api/excel/template/${encodeURIComponent(s.key)}" download>📄 下载模板</a>
+                    <button class="mini-btn" type="button" data-io-import="${escapeHtml(s.key)}">⬆ 导入此表</button>
+                    <select class="io-mode" data-io-mode="${escapeHtml(s.key)}" title="导入方式">
+                      <option value="append">追加（保留原有数据）</option>
+                      <option value="replace">覆盖（先清空这张表）</option>
+                    </select>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <div id="io-result"></div>
+  `;
+
+  document.getElementById('io-refresh').addEventListener('click', () => { renderIoPanel(); });
+
+  root.querySelectorAll('[data-io-import]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.ioImport;
+      const sel = root.querySelector('[data-io-mode="' + CSS.escape(key) + '"]');
+      IO_STATE.target = key;
+      IO_STATE.mode = sel ? sel.value : 'append';
+      IO_STATE.fileName = '';
+      IO_STATE.bytes = null;
+      const inp = document.getElementById('io-file');
+      if (!inp) return;
+      inp.value = '';          // 允许连续选同一个文件
+      inp.click();
+    });
+  });
+
+  bindIoFileOnce();
+}
+
+function bindIoFileOnce() {
+  if (IO_STATE.bound) return;
+  const inp = document.getElementById('io-file');
+  if (!inp) return;
+  inp.addEventListener('change', onIoFilePicked);
+  IO_STATE.bound = true;
+}
+
+async function onIoFilePicked() {
+  const inp = document.getElementById('io-file');
+  const f = inp && inp.files && inp.files[0];
+  if (!f || !IO_STATE.target) return;
+  if (f.size > 12 * 1024 * 1024) {
+    toast('文件超过 12MB，请拆成多个文件再导入', 'error');
+    return;
+  }
+  IO_STATE.fileName = f.name;
+  try {
+    IO_STATE.bytes = await f.arrayBuffer();
+  } catch (e) {
+    toast('读取文件失败：' + (e.message || e), 'error');
+    return;
+  }
+  await runIoImport(true);
+}
+
+/**
+ * @param {boolean} dryRun true=只预检（不写库）；false=确认写入
+ */
+async function runIoImport(dryRun) {
+  const box = document.getElementById('io-result');
+  if (!box || !IO_STATE.bytes) return;
+  const key = IO_STATE.target;
+  const mode = IO_STATE.mode;
+  box.innerHTML = `<section class="cfg-section"><div class="cfg-body">
+    <p class="cfg-hint">${dryRun ? '正在预检' : '正在写入'}「${escapeHtml(key)}」…</p></div></section>`;
+
+  const qs = `?mode=${mode}${dryRun ? '&dryRun=1' : '&confirm=1'}`;
+  let d = {};
+  try {
+    const r = await fetch(`/api/excel/import/${encodeURIComponent(key)}${qs}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: IO_STATE.bytes,
+    });
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `导入失败（HTTP ${r.status}）`);
+  } catch (e) {
+    box.innerHTML = `
+      <section class="cfg-section">
+        <div class="cfg-head io-bad">✗ ${dryRun ? '预检' : '导入'}没有通过，数据没有变动</div>
+        <div class="cfg-body">
+          <p class="cfg-hint cfg-warn">${escapeHtml(e.message || String(e))}</p>
+          ${renderIoErrors(d)}
+        </div>
+      </section>`;
+    return;
+  }
+
+  IO_STATE.last = d;
+  if (dryRun) {
+    box.innerHTML = renderIoPreview(key, mode, d);
+    bindIoPreviewButtons();
+  } else {
+    toast(`已导入 ${d.added} 条记录`);
+    try {
+      if (typeof DashboardStore.fetchLatest === 'function') await DashboardStore.fetchLatest();
+    } catch (_) {}
+    refreshAll();
+    // 注意顺序：renderIoPanel() 会重建 #io-root 的全部内容（连 #io-result 一起换掉），
+    // 所以必须先重画面板、再往新的 #io-result 里写完成提示。
+    // 反过来写的话卡片一秒钟就消失，用户会以为「什么都没发生」。
+    await renderIoPanel();
+    const box2 = document.getElementById('io-result');
+    if (box2) {
+      box2.innerHTML = `
+        <section class="cfg-section">
+          <div class="cfg-head io-ok">✓ 导入完成：${escapeHtml(key)}</div>
+          <div class="cfg-body">
+            <p class="cfg-hint">
+              本次写入 <b>${d.added}</b> 行${d.replaced ? `（覆盖前的 ${d.replaced} 行已删除）` : ''}，
+              这张表现在共 <b>${d.rows}</b> 行。看板已同步刷新。
+            </p>
+            <p class="cfg-hint">想反悔的话：<b>安全设置 → 备份</b> 里有一份导入前的快照（before-import），可以一键恢复。</p>
+            <div class="cfg-actions">
+              <button class="mini-btn" type="button" id="io-close-result">知道了</button>
+            </div>
+          </div>
+        </section>`;
+      const close = document.getElementById('io-close-result');
+      if (close) close.addEventListener('click', () => { box2.innerHTML = ''; });
+    }
+  }
+}
+
+function renderIoErrors(d) {
+  const errs = (d && d.errors) || [];
+  if (!errs.length) return '';
+  return `<ul class="io-err-list">${errs.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
+}
+
+function renderIoPreview(key, mode, d) {
+  const preview = d.preview || [];
+  const headers = preview.length ? Object.keys(preview[0]).slice(0, 9) : [];
+  const rowsHtml = preview.map(r => `<tr>${headers.map(h => `<td>${escapeHtml(r[h] === '' || r[h] == null ? '—' : String(r[h]))}</td>`).join('')}</tr>`).join('');
+
+  const warn = [];
+  if ((d.warnings || []).length) warn.push(...d.warnings);
+  if ((d.missingColumns || []).length) warn.push(`文件里没有这些列，将按空值写入：${d.missingColumns.join('、')}`);
+
+  return `
+    <section class="cfg-section">
+      <div class="cfg-head">预检结果：${escapeHtml(key)}</div>
+      <div class="cfg-body">
+        <p class="cfg-hint">
+          文件 <b>${escapeHtml(IO_STATE.fileName || '（未命名）')}</b>
+          ｜工作表 <b>${escapeHtml(d.sheetName || '—')}</b>
+          ｜方式 <b>${mode === 'replace' ? '覆盖' : '追加'}</b>
+        </p>
+        <p class="io-summary">
+          将导入 <b class="io-ok">${d.incoming}</b> 行
+          ${d.skippedEmpty ? `（另有 ${d.skippedEmpty} 个空行已跳过）` : ''}
+          ｜这张表 <b>${d.before}</b> 行 → <b>${d.after}</b> 行
+        </p>
+        ${mode === 'replace'
+          ? `<p class="cfg-hint cfg-warn">⚠️ 覆盖模式会先删除这张表现有的 ${d.before} 行数据。导入前系统会自动存一份快照，可在「安全设置 → 备份」找回。</p>`
+          : ''}
+        ${warn.length ? `<div class="cfg-warn-box"><b>需要留意</b><ul>${warn.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>` : ''}
+        ${headers.length ? `
+          <p class="cfg-hint" style="margin-top:10px">前 ${preview.length} 行预览（最多显示 9 列）：</p>
+          <div class="io-preview">
+            <table class="cfg-table">
+              <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>` : ''}
+        <div class="cfg-actions">
+          <button class="mini-btn" type="button" id="io-cancel">取消</button>
+          <button class="mini-btn ${mode === 'replace' ? 'danger' : ''}" type="button" id="io-confirm">
+            ${mode === 'replace' ? `确认清空并导入 ${d.incoming} 行` : `确认导入 ${d.incoming} 行`}
+          </button>
+        </div>
+      </div>
+    </section>`;
+}
+
+function bindIoPreviewButtons() {
+  const cancel = document.getElementById('io-cancel');
+  if (cancel) cancel.addEventListener('click', () => {
+    const box = document.getElementById('io-result');
+    if (box) box.innerHTML = '';
+    IO_STATE.bytes = null;
+  });
+  const okBtn = document.getElementById('io-confirm');
+  if (okBtn) okBtn.addEventListener('click', async () => {
+    okBtn.disabled = true;
+    okBtn.textContent = '正在导入…';
+    await runIoImport(false);
+  });
+}

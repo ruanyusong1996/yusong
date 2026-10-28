@@ -50,6 +50,8 @@ const tClose = (name, actual, expect, eps = 0.02) => {
   if (ok) { PASS++; console.log(`  ✓ ${name}  (${actual})`); }
   else { FAIL++; console.log(`  ❌ ${name}  实际=${actual} 期望≈${expect}`); }
 };
+/** 布尔断言：等价于 t(name, !!cond, true)，读起来更像测试 */
+const ok = (name, cond) => t(name, !!cond, true);
 
 // ---------------- CDP 客户端 ----------------
 class CDP {
@@ -1672,6 +1674,184 @@ class CDP {
   console.log('    提报人:', JSON.stringify(rep));
   t('后台表里有「提报人」列', rep.hasReporter, true);
   t('后台能看到这条数据是谁提报的', rep.reporter, '收集端口 1');
+
+  // ---------- Excel 导入 / 导出 ----------
+  console.log('\n【E11】Excel 导入 / 导出');
+  {
+    const nodePath = require('path');
+    const XLSX = require(nodePath.join(__dirname, 'lib', 'xlsx.full.min.js'));
+    const K02 = '02-走访慰问';
+
+    // 造一个「用户自己填的」小文件：列顺序故意与模板不同、少几列、账户故意写错
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['慰问物品金额（元）', '员工姓名', '慰问类型', '所在大区', '员工所在部门/门店', '费用列支账户', '备注'],
+      [260, 'E2E表格甲', '其他', '华北', '某门店', '不存在的工会X', 'E2EExcel导入'],
+    ]), '随便命名的表');
+    const b64 = Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })).toString('base64');
+
+    await gotoAdmin();
+    await cdp.evalJs(`(function(){
+      var b=[...document.querySelectorAll('.tab-btn')].find(function(x){ return x.dataset.tab==='__io'; });
+      if(b) b.click(); return !!b;
+    })()`);
+    await waitFor('document.querySelectorAll("#io-root .io-table tbody tr").length>=5', '导入导出面板');
+    const ioPanel = await cdp.evalJs(`(function(){
+      var rows=[...document.querySelectorAll('#io-root .io-table tbody tr')];
+      var panel=document.getElementById('panel-io');
+      return {
+        rows: rows.length,
+        visible: !!panel && getComputedStyle(panel).display !== 'none',
+        keys: rows.map(function(r){ return r.cells[0].textContent.trim(); }),
+        hasExport: rows.every(function(r){ return !!r.querySelector('a[href*="/api/excel/export/"]'); }),
+        hasTpl: rows.every(function(r){ return !!r.querySelector('a[href*="/api/excel/template/"]'); }),
+        hasImport: rows.every(function(r){ return !!r.querySelector('[data-io-import]'); }),
+        hasMode: rows.every(function(r){ return !!r.querySelector('[data-io-mode]'); }),
+        allBtn: !!document.querySelector('#io-root a[href="/api/excel/export-all"]'),
+      };
+    })()`);
+    console.log('    面板:', JSON.stringify({ rows: ioPanel.rows, keys: ioPanel.keys }));
+    t('「导入导出」面板打开', ioPanel.visible, true);
+    t('列出全部 5 张表', ioPanel.rows, 5);
+    t('每行都有「导出」按钮', ioPanel.hasExport, true);
+    t('每行都有「下载模板」按钮', ioPanel.hasTpl, true);
+    t('每行都有「导入」按钮', ioPanel.hasImport, true);
+    t('每行都能选导入方式（追加/覆盖）', ioPanel.hasMode, true);
+    t('有「导出全部」入口', ioPanel.allBtn, true);
+
+    const ioHttp = await cdp.evalJs(`(async()=>{
+      async function probe(u){
+        var r = await fetch(u,{credentials:'include'});
+        var b = await r.arrayBuffer();
+        var u8 = new Uint8Array(b);
+        return { status:r.status, ct:r.headers.get('content-type')||'', size:u8.length,
+                 pk: u8.length>2 && u8[0]===0x50 && u8[1]===0x4b,
+                 cd:r.headers.get('content-disposition')||'' };
+      }
+      var sheets = await (await fetch('/api/excel/sheets',{credentials:'include'})).json();
+      return {
+        count: (sheets.sheets||[]).length,
+        exp: await probe('/api/excel/export/' + encodeURIComponent('02-走访慰问')),
+        tpl: await probe('/api/excel/template/' + encodeURIComponent('02-走访慰问')),
+        all: await probe('/api/excel/export-all'),
+      };
+    })()`);
+    console.log('    接口:', JSON.stringify({ exp: ioHttp.exp.size, tpl: ioHttp.tpl.size, all: ioHttp.all.size }));
+    t('表清单接口返回 5 张表', ioHttp.count, 5);
+    t('导出单表 → 200', ioHttp.exp.status, 200);
+    t('导出的是真正的 xlsx（PK 头）', ioHttp.exp.pk, true);
+    ok('导出文件有内容（> 3KB）', ioHttp.exp.size > 3000);
+    t('模板 → 200 且是 xlsx', `${ioHttp.tpl.status}/${ioHttp.tpl.pk}`, '200/true');
+    t('全量导出 → 200 且是 xlsx', `${ioHttp.all.status}/${ioHttp.all.pk}`, '200/true');
+    ok('全量导出比单表大', ioHttp.all.size > ioHttp.exp.size);
+
+    // ---- 导入：预检（含「账户对不上」提醒）→ 确认 ----
+    const beforeRows = await cdp.evalJs(`(async()=>{
+      var d = await (await fetch('/api/data',{credentials:'include'})).json();
+      return d['02-走访慰问'].rows.length;
+    })()`);
+
+    await cdp.evalJs(`(function(){
+      var rows=[...document.querySelectorAll('#io-root .io-table tbody tr')];
+      var row=rows.find(function(r){ return r.cells[0].textContent.trim()==='02-走访慰问'; });
+      row.querySelector('[data-io-import]').click();
+      return true;
+    })()`);
+    // 用 DataTransfer 把文件塞进隐藏的 file input，再触发 change（等价于用户选文件）
+    await cdp.evalJs(`(function(){
+      var bin = atob(${JSON.stringify(b64)});
+      var u8 = new Uint8Array(bin.length);
+      for (var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+      var f = new File([u8], 'e2e-import.xlsx', { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      var dt = new DataTransfer(); dt.items.add(f);
+      var inp = document.getElementById('io-file');
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change', { bubbles:true }));
+      return true;
+    })()`);
+    await waitFor('!!document.getElementById("io-confirm")', '导入预检卡片');
+    const preview = await cdp.evalJs(`(function(){
+      var sum = document.querySelector('#io-result .io-summary');
+      var box = document.querySelector('#io-result .cfg-warn-box');
+      var btn = document.getElementById('io-confirm');
+      return {
+        summary: sum ? sum.textContent.replace(/\\s+/g,' ').trim() : '',
+        warn: box ? box.textContent.replace(/\\s+/g,' ').trim() : '',
+        btn: btn ? btn.textContent.replace(/\\s+/g,' ').trim() : '',
+        previewRows: document.querySelectorAll('#io-result .io-preview tbody tr').length,
+      };
+    })()`);
+    console.log('    预检:', JSON.stringify(preview));
+    ok('预检显示「将导入 1 行」', preview.summary.indexOf('将导入 1') >= 0);
+    ok('预检显示导入前后的行数', preview.summary.indexOf(`${beforeRows}`) >= 0);
+    ok('预检提示账户在经费表里找不到（钱汇不进去）', preview.warn.indexOf('找不到同名工会') >= 0);
+    ok('预检有数据预览表', preview.previewRows >= 1);
+    ok('确认按钮写明导入条数', preview.btn.indexOf('确认导入 1 行') >= 0);
+
+    await cdp.evalJs(`document.getElementById('io-confirm').click()`);
+    await waitFor('!!document.querySelector("#io-result .cfg-head.io-ok")', '导入完成提示');
+    const done = await cdp.evalJs(`(async()=>{
+      var head = document.querySelector('#io-result .cfg-head');
+      var d = await (await fetch('/api/data',{credentials:'include'})).json();
+      var sh = d['02-走访慰问'];
+      var mine = sh.rows.filter(function(r){ return String(r['备注']||'').indexOf('E2EExcel导入')>=0; });
+      return {
+        head: head ? head.textContent.trim() : '',
+        rows: sh.rows.length,
+        mineCount: mine.length,
+        amount: mine[0] ? Number(mine[0]['慰问物品金额（元）']) : null,
+        reporter: mine[0] ? String(mine[0]['提报人']||'') : '',
+        seq: mine[0] ? mine[0]['序号'] : null,
+        isObj: mine[0] ? !Array.isArray(mine[0]) : false,
+      };
+    })()`);
+    console.log('    导入后:', JSON.stringify(done));
+    ok('页面提示导入完成', done.head.indexOf('导入完成') >= 0);
+    t('表行数 +1', done.rows, beforeRows + 1);
+    t('找到刚导入的那一行', done.mineCount, 1);
+    t('金额按文件写入', done.amount, 260);
+    t('序号自动重排为最后一行', done.seq, beforeRows + 1);
+    t('落库的是对象行', done.isObj, true);
+
+    // ---- 覆盖模式的预检必须给红字警告（且按钮文案变成「清空并导入」）----
+    await cdp.evalJs(`(function(){
+      var rows=[...document.querySelectorAll('#io-root .io-table tbody tr')];
+      var row=rows.find(function(r){ return r.cells[0].textContent.trim()==='02-走访慰问'; });
+      var sel=row.querySelector('[data-io-mode]');
+      sel.value='replace';
+      row.querySelector('[data-io-import]').click();
+      return true;
+    })()`);
+    await cdp.evalJs(`(function(){
+      var bin = atob(${JSON.stringify(b64)});
+      var u8 = new Uint8Array(bin.length);
+      for (var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+      var f = new File([u8], 'e2e-import.xlsx', { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      var dt = new DataTransfer(); dt.items.add(f);
+      var inp = document.getElementById('io-file');
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change', { bubbles:true }));
+      return true;
+    })()`);
+    await waitFor('!!document.getElementById("io-confirm")', '覆盖模式预检');
+    const repl = await cdp.evalJs(`(function(){
+      var btn = document.getElementById('io-confirm');
+      var panel = document.getElementById('io-result');
+      return {
+        btn: btn ? btn.textContent.replace(/\\s+/g,' ').trim() : '',
+        text: panel ? panel.textContent.replace(/\\s+/g,' ') : '',
+      };
+    })()`);
+    ok('覆盖模式按钮变成「确认清空并导入」', repl.btn.indexOf('清空并导入') >= 0);
+    ok('覆盖模式给出「会先删除原有数据」的警告', repl.text.indexOf('会先删除这张表现有的') >= 0);
+    await cdp.evalJs(`document.getElementById('io-cancel').click()`);
+    await sleep(300);
+    const afterCancel = await cdp.evalJs(`(async()=>{
+      var d = await (await fetch('/api/data',{credentials:'include'})).json();
+      return d['02-走访慰问'].rows.length;
+    })()`);
+    t('点「取消」不会改动数据', afterCancel, beforeRows + 1);
+  }
 
   console.log('\n【F】运行期 JS 异常');
   console.log('    捕获异常数:', consoleErrs.length, consoleErrs.slice(0, 3));
